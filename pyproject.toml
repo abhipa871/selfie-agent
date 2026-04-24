@@ -10,11 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "torch",
-  "transformers>=4.40.0",
-  # Used by from_pretrained(device_map="auto")
-  "accelerate>=0.26.0",
-  # Required when ModelLoader.load(..., four_bit_quant=True) or BitsAndBytesConfig
-  "bitsandbytes>=0.46.1",
+  # Unpinned so a normal install resolves to the current latest releases.
+  "transformers",
+  "accelerate",
+  "bitsandbytes",
 ]
 
 [tool.setuptools]
