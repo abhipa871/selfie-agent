@@ -11,6 +11,7 @@ from .compat import (
     interpretation_user_prompt_sequence,
     resolve_model_device,
 )
+from .generation import merge_generation_kwargs
 from .prompts import InterpretationPrompt
 from .utils import clean_thinking
 
@@ -144,9 +145,20 @@ def _stop_ids_for_answer_span(tokenizer) -> Set[int]:
 
 
 class SelfieInterpreter:
-    def __init__(self, model, tokenizer) -> None:
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        *,
+        use_qwen35_sampling: bool = False,
+        generation_kwargs: Dict[str, Any] | None = None,
+        interpreter_generation_kwargs: Dict[str, Any] | None = None,
+    ) -> None:
         self.model = model
         self.tokenizer = tokenizer
+        self.use_qwen35_sampling = use_qwen35_sampling
+        self.generation_kwargs = generation_kwargs
+        self.interpreter_generation_kwargs = interpreter_generation_kwargs
 
     def make_interpretation_prompt(
         self,
@@ -241,6 +253,9 @@ class SelfieInterpreter:
         source_layer: int | None = None,
         placeholder: str = "- ",
         enable_thinking: bool = False,
+        use_qwen35_sampling: bool | None = None,
+        generation_kwargs: Dict[str, Any] | None = None,
+        interpreter_generation_kwargs: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Run the original model generate pass, then the interpretation generate pass with injection.
 
@@ -262,6 +277,12 @@ class SelfieInterpreter:
         full reasoning mode. Ignored for tokenizers without that argument. If you pass a custom
         :class:`InterpretationPrompt`, set ``enable_thinking`` on that object instead; this parameter
         only applies when the default prompt is built here.
+
+        ``use_qwen35_sampling`` (default: instance ``use_qwen35_sampling``) selects Qwen 3.5-style presets:
+        instruct when ``enable_thinking=False``, reasoning when ``enable_thinking=True``. Per-call
+        ``generation_kwargs`` / ``interpreter_generation_kwargs`` override instance defaults and
+        are merged on top of the preset (when enabled). When sampling is off and no kwargs are
+        given, generation stays greedy (``do_sample=False``).
         """
         original_input_ids, original_attention_mask = self._encode_chat_prompt(
             original_prompt, enable_thinking=enable_thinking
@@ -269,15 +290,25 @@ class SelfieInterpreter:
         original_prompt_len = original_input_ids.shape[1]
 
         pad_id = _pad_id(self.tokenizer)
+        eos_gen = _eos_token_id_for_generate(self.tokenizer)
+        qwen_flag = self.use_qwen35_sampling if use_qwen35_sampling is None else use_qwen35_sampling
+        orig_gen_kw = merge_generation_kwargs(
+            max_new_tokens=original_max_new_tokens,
+            eos_token_id=eos_gen,
+            pad_token_id=pad_id,
+            use_qwen35_sampling=qwen_flag,
+            enable_thinking=enable_thinking,
+            instance_kwargs=self.generation_kwargs,
+            call_kwargs=generation_kwargs,
+        )
+        if not qwen_flag and not (self.generation_kwargs or generation_kwargs):
+            orig_gen_kw["do_sample"] = False
+
         with torch.no_grad():
             original_gen = self.model.generate(
                 input_ids=original_input_ids,
                 attention_mask=original_attention_mask,
-                max_new_tokens=original_max_new_tokens,
-                do_sample=False,
-                eos_token_id=_eos_token_id_for_generate(self.tokenizer),
-                pad_token_id=pad_id,
-                return_dict_in_generate=True,
+                **orig_gen_kw,
             )
 
         original_sequences = original_gen.sequences
@@ -334,6 +365,18 @@ class SelfieInterpreter:
             for key, value in interpretation_prompt.interpretation_prompt_model_inputs.items()
         }
 
+        interp_gen_kw = merge_generation_kwargs(
+            max_new_tokens=interpreter_max_new_tokens,
+            eos_token_id=eos_gen,
+            pad_token_id=pad_id,
+            use_qwen35_sampling=qwen_flag,
+            enable_thinking=enable_thinking,
+            instance_kwargs=self.interpreter_generation_kwargs,
+            call_kwargs=interpreter_generation_kwargs,
+        )
+        if not qwen_flag and not (self.interpreter_generation_kwargs or interpreter_generation_kwargs):
+            interp_gen_kw["do_sample"] = False
+
         result = self._forward_with_injection(
             source_hidden_states=source_hs,
             input_ids=target_inputs["input_ids"],
@@ -341,7 +384,7 @@ class SelfieInterpreter:
             target_layer=target_layer,
             tokens_to_interpret=tokens_to_interpret,  # type: ignore[arg-type]
             target_insert_locations=interpretation_prompt.insert_locations,
-            max_new_tokens=interpreter_max_new_tokens,
+            generation_kwargs=interp_gen_kw,
             replacing_mode=replacing_mode,
             overlay_strength=overlay_strength,
             injection_mode=injection_mode,
@@ -481,7 +524,7 @@ class SelfieInterpreter:
         target_layer: int | None,
         tokens_to_interpret: Sequence[Tuple[int, int]],
         target_insert_locations,
-        max_new_tokens: int,
+        generation_kwargs: Dict[str, Any],
         replacing_mode: str,
         overlay_strength: float,
         injection_mode: str,
@@ -540,16 +583,11 @@ class SelfieInterpreter:
             expanded_input_ids = input_ids.repeat(batch_size, 1)
             expanded_attention_mask = attention_mask.repeat(batch_size, 1) if attention_mask is not None else None
             prompt_len = expanded_input_ids.shape[1]
-            pad_id = _pad_id(self.tokenizer)
 
             outputs = self.model.generate(
                 input_ids=expanded_input_ids,
                 attention_mask=expanded_attention_mask,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                eos_token_id=_eos_token_id_for_generate(self.tokenizer),
-                pad_token_id=pad_id,
-                return_dict_in_generate=True,
+                **generation_kwargs,
             )
             sequences = outputs.sequences
             return {
