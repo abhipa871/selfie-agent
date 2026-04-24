@@ -22,30 +22,59 @@ def _pad_id(tokenizer) -> int:
     raise ValueError("Tokenizer has neither pad_token_id nor eos_token_id")
 
 
-def _stop_ids_for_answer_span(tokenizer) -> Set[int]:
-    """Token ids that end the assistant 'answer' for hidden-state / debug slices (Gemma eot, EOS, Qwen im_end, …)."""
-    s: set[int] = set()
+def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
+    """Token ids that should end generation and the visible assistant span.
+
+    Gemma 2 chat often finishes with ``<end_of_turn>``, which is not always the same id as
+    ``tokenizer.eos_token_id``; ``generate`` must receive every such id or it will emit EOT
+    as a normal token and run until ``max_new_tokens``.
+    """
+    ids: set[int] = set()
     eos = getattr(tokenizer, "eos_token_id", None)
     if eos is not None:
         if isinstance(eos, (list, tuple)):
-            s.update(int(x) for x in eos)
+            ids.update(int(x) for x in eos)
         else:
-            s.add(int(eos))
+            ids.add(int(eos))
     for attr in ("eot_id", "im_end_id"):
         tid = getattr(tokenizer, attr, None)
         if tid is not None:
-            s.add(int(tid))
+            ids.add(int(tid))
+    unk_id = getattr(tokenizer, "unk_token_id", None)
     for marker in (
-        # Gemma 2, etc. (if encoded as a single id; closes assistant turn)
-        "<" + "end" + "of" + "turn" + ">",
+        "<end_of_turn>",  # Gemma 2 (assistant turn)
     ):
         try:
-            ids = tokenizer.encode(marker, add_special_tokens=False)
+            tid = tokenizer.convert_tokens_to_ids(marker)
         except Exception:
-            continue
-        if len(ids) == 1:
-            s.add(int(ids[0]))
-    return s
+            tid = None
+        if tid is not None:
+            tid = int(tid)
+            if tid >= 0 and (unk_id is None or tid != unk_id):
+                ids.add(tid)
+        try:
+            encoded = tokenizer.encode(marker, add_special_tokens=False)
+        except Exception:
+            encoded = []
+        if len(encoded) == 1:
+            tid = int(encoded[0])
+            if unk_id is None or tid != unk_id:
+                ids.add(tid)
+    return sorted(ids)
+
+
+def _eos_token_id_for_generate(tokenizer) -> int | List[int] | None:
+    stops = _eos_token_ids_for_stopping(tokenizer)
+    if not stops:
+        return getattr(tokenizer, "eos_token_id", None)
+    if len(stops) == 1:
+        return stops[0]
+    return stops
+
+
+def _stop_ids_for_answer_span(tokenizer) -> Set[int]:
+    """Token ids that end the assistant 'answer' for hidden-state / debug slices (Gemma eot, EOS, Qwen im_end, …)."""
+    return set(_eos_token_ids_for_stopping(tokenizer))
 
 
 class SelfieInterpreter:
@@ -157,7 +186,7 @@ class SelfieInterpreter:
                 attention_mask=original_attention_mask,
                 max_new_tokens=original_max_new_tokens,
                 do_sample=False,
-                eos_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=_eos_token_id_for_generate(self.tokenizer),
                 pad_token_id=pad_id,
                 return_dict_in_generate=True,
             )
@@ -426,7 +455,7 @@ class SelfieInterpreter:
                 attention_mask=expanded_attention_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
-                eos_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=_eos_token_id_for_generate(self.tokenizer),
                 pad_token_id=pad_id,
                 return_dict_in_generate=True,
             )
