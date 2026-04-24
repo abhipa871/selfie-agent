@@ -11,11 +11,6 @@ from .compat import (
     interpretation_user_prompt_sequence,
     resolve_model_device,
 )
-from .gemma4 import (
-    count_leading_gemma4_thought_tokens,
-    strip_gemma4_display,
-    trim_trailing_gemma4_layout_global_indices,
-)
 from .generation import build_generation_kwargs
 from .prompts import InterpretationPrompt
 from .utils import clean_thinking
@@ -41,9 +36,8 @@ def _validate_tokens_to_interpret(
             raise IndexError(
                 f"tokens_to_interpret[{j}] has token index {token_idx} but the answer "
                 f"hidden-state slice has {n} position(s) (use 0..{n - 1} when non-empty). "
-                f"The second element is a 0-based index along the *trimmed* answer span, in the same "
-                f"order as result['answer_indices'] (Gemma-4 thought/layout stripping applied when "
-                f"relevant); it is not a global input_ids index."
+                f"The second element is a 0-based index along the answer hidden-state span, in the same "
+                f"order as result['answer_indices']; it is not a global input_ids index."
             )
 
 
@@ -235,19 +229,12 @@ class SelfieInterpreter:
         sequences: torch.LongTensor,
         answer_only: bool = True,
         prompt_len: int | None = None,
-        *,
-        enable_thinking: bool = False,
     ):
         """Return hidden states sliced to relevant token positions.
 
         When ``answer_only=False``, ``prompt_len`` is required. Indices exclude stream-start specials
         (e.g. BOS / ``<|begin_of_text|>``) and leading whitespace-only tokens at the start of the
         generated continuation (so layout / sentence-initial spacing is not treated as content).
-
-        For Gemma 4, when ``enable_thinking=False`` (reasoning *disabled* in the template), the model
-        may still emit a leading empty ``<|channel>thought`` … ``<channel|>`` block; that prefix is
-        removed from the slice. When ``enable_thinking=True``, the full block including internal
-        reasoning tokens is kept in ``answer_indices``.
         """
         with torch.no_grad():
             outputs = self.model(
@@ -279,20 +266,6 @@ class SelfieInterpreter:
             if token_id in answer_stop_ids:
                 break
             answer_indices.append(i)
-
-        if not enable_thinking and answer_indices:
-            n_skip = count_leading_gemma4_thought_tokens(
-                self.tokenizer,
-                [input_ids[i].item() for i in answer_indices],
-            )
-            if n_skip and n_skip < len(answer_indices):
-                answer_indices = answer_indices[n_skip:]
-            elif n_skip and n_skip >= len(answer_indices):
-                answer_indices = []
-            if answer_indices:
-                answer_indices = trim_trailing_gemma4_layout_global_indices(
-                    self.tokenizer, input_ids, answer_indices
-                )
 
         answer_hs = tuple(layer_hs[answer_indices, :] for layer_hs in full_hs)
         return outputs, answer_hs, answer_indices
@@ -338,10 +311,6 @@ class SelfieInterpreter:
         ``enable_thinking`` is passed to ``apply_chat_template`` only if the tokenizer defines that
         argument (default ``False``). Ignored otherwise. For a custom :class:`InterpretationPrompt`, set
         ``enable_thinking`` on that object; this parameter applies only when the default prompt is built.
-        For **Gemma 4**, with ``enable_thinking=True`` the leading ``<|channel>thought`` …
-        ``<channel|>`` span (including internal reasoning) is **kept** in ``answer_indices`` and
-        in decoded text; with ``False``, that prefix is removed so only the final-answer surface
-        text and token span remain (see ``get_hidden_states_from_sequences``).
 
         Optional ``generation_kwargs`` / ``interpreter_generation_kwargs`` (and the same on
         ``SelfieInterpreter(...)``) are merged into ``model.generate`` after required keys
@@ -352,9 +321,8 @@ class SelfieInterpreter:
 
         **Placeholder / token alignment:** Each entry in ``tokens_to_interpret`` is ``(layer, i)``
         where ``i`` is **not** a global input_ids position. It indexes the **sliced** answer hidden
-        states returned from :meth:`get_hidden_states_from_sequences` (row ``i`` = the ``i``-th
-        value in ``result['answer_indices']`` in order, after any leading thought-channel skip and
-        trailing layout trim for Gemma 4 with ``enable_thinking=False``). In ``injection_mode="aligned"``,
+        states from :meth:`get_hidden_states_from_sequences` (row ``i`` = the ``i``-th
+        value in ``result['answer_indices']`` in order). In ``injection_mode="aligned"``,
         ``tokens_to_interpret[j]`` is injected at the *j*-th ``0`` placeholder in the interpretation
         prompt, in the order those placeholders were laid out in the user sequence (the default prompt
         lists placeholders before the summary suffix, left to right). Use ``"all"`` and ``source_layer`` to
@@ -391,18 +359,13 @@ class SelfieInterpreter:
             sequences=original_sequences,
             answer_only=answer_only,
             prompt_len=original_prompt_len,
-            enable_thinking=enable_thinking,
         )
 
         def _postprocess_visible_text(s: str) -> str:
             if enable_thinking:
                 return s.strip()
-            s = strip_gemma4_display(s)
             return clean_thinking(s)
 
-        # Do not use ``skip_special_tokens=True`` here: it drops ``<|channel>`` / ``<channel|>`` so
-        # :func:`strip_gemma4_display` cannot see them. That path also repair-heals orphan
-        # ``thought`` lines if tags were already skipped.
         row = original_sequences[0]
         original_full_text = _postprocess_visible_text(
             self.tokenizer.decode(row, skip_special_tokens=False)
@@ -515,10 +478,9 @@ class SelfieInterpreter:
 
         **Alignment with** :meth:`interpret` / ``"tokens_to_interpret"`` **(recommended):** pass
         ``only_global_indices=result["answer_indices"]`` so each ``rows[i]`` is the *same* global
-        position the interpreter used for the trimmed final-answer span. Otherwise, rows follow the
-        raw stream until a *stop* id (see :func:`answer_stop_id_set`); for Gemma that includes
-        turn / end-of-sequence style markers, not only ``eos`` — do not reimplement stop logic
-        with ``eos`` alone.
+        position the interpreter used for the answer span. Otherwise, rows follow the
+        raw stream until a *stop* id (see :func:`answer_stop_id_set`), which is typically broader
+        than ``eos`` alone.
         """
         toks = original_sequences[0]
         if only_global_indices is not None:
