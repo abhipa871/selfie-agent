@@ -6,6 +6,7 @@ import torch
 
 from .compat import (
     InterpretationStyle,
+    apply_chat_template_with_thinking,
     get_decoder_layers,
     interpretation_user_prompt_sequence,
     resolve_model_device,
@@ -43,6 +44,7 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
     unk_id = getattr(tokenizer, "unk_token_id", None)
     for marker in (
         "<end_of_turn>",  # Gemma 2 (assistant turn)
+        "<|im_end|>",  # Qwen / ChatML assistant end
     ):
         try:
             tid = tokenizer.convert_tokens_to_ids(marker)
@@ -61,6 +63,70 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
             if unk_id is None or tid != unk_id:
                 ids.add(tid)
     return sorted(ids)
+
+
+def _prefix_stream_control_token_indices(tokenizer, seq: List[int]) -> Set[int]:
+    """Contiguous indices from position 0 that are BOS / stream-start specials (not conversational content)."""
+    if not seq:
+        return set()
+    starter: Set[int] = set()
+    bos = getattr(tokenizer, "bos_token_id", None)
+    if bos is not None:
+        starter.add(int(bos))
+    for marker in (
+        "<|begin_of_text|>",
+        "<|startoftext|>",
+        "<s>",
+    ):
+        try:
+            tid = int(tokenizer.convert_tokens_to_ids(marker))
+        except Exception:
+            continue
+        unk = getattr(tokenizer, "unk_token_id", None)
+        if unk is not None and tid == unk:
+            continue
+        if tid >= 0:
+            starter.add(tid)
+    exclude: Set[int] = set()
+    i = 0
+    while i < len(seq) and seq[i] in starter:
+        exclude.add(i)
+        i += 1
+    return exclude
+
+
+def _continuation_leading_layout_indices(
+    tokenizer,
+    seq: List[int],
+    prompt_len: int,
+    max_skip: int = 64,
+) -> Set[int]:
+    """Indices at the start of the generated span that are whitespace / layout-only (no visible text)."""
+    exclude: Set[int] = set()
+    L = len(seq)
+    i = prompt_len
+    n = 0
+    while i < L and n < max_skip:
+        piece = tokenizer.decode([seq[i]], skip_special_tokens=False)
+        if piece.strip() == "":
+            exclude.add(i)
+            i += 1
+            n += 1
+            continue
+        break
+    return exclude
+
+
+def _exclude_indices_for_full_sequence_span(
+    tokenizer,
+    input_ids_row: torch.Tensor,
+    prompt_len: int,
+) -> Set[int]:
+    """When ``answer_only=False``, drop stream-start specials and leading layout in the completion."""
+    seq = input_ids_row.tolist()
+    out = _prefix_stream_control_token_indices(tokenizer, seq)
+    out.update(_continuation_leading_layout_indices(tokenizer, seq, prompt_len))
+    return out
 
 
 def _eos_token_id_for_generate(tokenizer) -> int | List[int] | None:
@@ -88,6 +154,7 @@ class SelfieInterpreter:
         suffix: str = "Summarize this message in two sentences:",
         style: InterpretationStyle = "universal",
         placeholder: str = "- ",
+        enable_thinking: bool = False,
     ) -> InterpretationPrompt:
         """Build an :class:`InterpretationPrompt` for the loaded tokenizer's chat template.
 
@@ -108,6 +175,7 @@ class SelfieInterpreter:
                 style,
             ),
             placeholder=placeholder,
+            enable_thinking=enable_thinking,
         )
 
     def get_hidden_states_from_sequences(
@@ -116,6 +184,12 @@ class SelfieInterpreter:
         answer_only: bool = True,
         prompt_len: int | None = None,
     ):
+        """Return hidden states sliced to relevant token positions.
+
+        When ``answer_only=False``, ``prompt_len`` is required. Indices exclude stream-start specials
+        (e.g. BOS / ``<|begin_of_text|>``) and leading whitespace-only tokens at the start of the
+        generated continuation (so layout / sentence-initial spacing is not treated as content).
+        """
         with torch.no_grad():
             outputs = self.model(
                 input_ids=sequences.to(resolve_model_device(self.model)),
@@ -125,7 +199,13 @@ class SelfieInterpreter:
 
         full_hs = tuple(layer[0] for layer in outputs.hidden_states)
         if not answer_only:
-            return outputs, full_hs, list(range(sequences.shape[1]))
+            if prompt_len is None:
+                raise ValueError("prompt_len must be provided when answer_only=False")
+            L = sequences.shape[1]
+            exclude = _exclude_indices_for_full_sequence_span(self.tokenizer, sequences[0], prompt_len)
+            kept = [i for i in range(L) if i not in exclude]
+            answer_hs = tuple(layer_hs[kept, :] for layer_hs in full_hs)
+            return outputs, answer_hs, kept
 
         if prompt_len is None:
             raise ValueError("prompt_len must be provided when answer_only=True")
@@ -160,6 +240,7 @@ class SelfieInterpreter:
         interpretation_style: InterpretationStyle = "universal",
         source_layer: int | None = None,
         placeholder: str = "- ",
+        enable_thinking: bool = False,
     ) -> Dict[str, Any]:
         """Run the original model generate pass, then the interpretation generate pass with injection.
 
@@ -175,8 +256,16 @@ class SelfieInterpreter:
 
         ``placeholder`` is passed to the default :class:`InterpretationPrompt` only; ignored if you pass
         ``interpretation_prompt`` yourself.
+
+        ``enable_thinking`` is passed to ``apply_chat_template`` when the tokenizer supports it (Qwen3 /
+        Qwen3.5 reasoning models). Default ``False`` disables thinking in the template; set ``True`` for
+        full reasoning mode. Ignored for tokenizers without that argument. If you pass a custom
+        :class:`InterpretationPrompt`, set ``enable_thinking`` on that object instead; this parameter
+        only applies when the default prompt is built here.
         """
-        original_input_ids, original_attention_mask = self._encode_chat_prompt(original_prompt)
+        original_input_ids, original_attention_mask = self._encode_chat_prompt(
+            original_prompt, enable_thinking=enable_thinking
+        )
         original_prompt_len = original_input_ids.shape[1]
 
         pad_id = _pad_id(self.tokenizer)
@@ -229,6 +318,7 @@ class SelfieInterpreter:
                 suffix=interpretation_suffix,
                 style=interpretation_style,
                 placeholder=placeholder,
+                enable_thinking=enable_thinking,
             )
 
         if injection_mode == "aligned" and len(tokens_to_interpret) != len(
@@ -301,11 +391,13 @@ class SelfieInterpreter:
 
         return rows
 
-    def _encode_chat_prompt(self, prompt: str):
+    def _encode_chat_prompt(self, prompt: str, enable_thinking: bool = False):
         dev = resolve_model_device(self.model)
         messages = [{"role": "user", "content": prompt}]
-        encoded = self.tokenizer.apply_chat_template(
+        encoded = apply_chat_template_with_thinking(
+            self.tokenizer,
             messages,
+            enable_thinking=enable_thinking,
             return_tensors="pt",
             add_generation_prompt=True,
         )

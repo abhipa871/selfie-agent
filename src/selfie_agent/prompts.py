@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from .compat import apply_chat_template_with_thinking
+
 
 class InterpretationPrompt:
     def __init__(
@@ -10,10 +12,12 @@ class InterpretationPrompt:
         user_prompt_sequence: Sequence[object],
         system_prompt: str | None = None,
         placeholder: str = "- ",
+        enable_thinking: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.placeholder = placeholder
         self.system_prompt = system_prompt
+        self.enable_thinking = enable_thinking
 
         user_content = ""
         self.insert_locations = []
@@ -24,8 +28,10 @@ class InterpretationPrompt:
                 continue
 
             before_messages = self._build_messages(user_content)
-            before_text = tokenizer.apply_chat_template(
+            before_text = apply_chat_template_with_thinking(
+                tokenizer,
                 before_messages,
+                enable_thinking=self.enable_thinking,
                 tokenize=False,
                 add_generation_prompt=True,
             )
@@ -34,8 +40,10 @@ class InterpretationPrompt:
             user_content += placeholder
 
             after_messages = self._build_messages(user_content)
-            after_text = tokenizer.apply_chat_template(
+            after_text = apply_chat_template_with_thinking(
+                tokenizer,
                 after_messages,
+                enable_thinking=self.enable_thinking,
                 tokenize=False,
                 add_generation_prompt=True,
             )
@@ -48,8 +56,10 @@ class InterpretationPrompt:
             self.insert_locations.append(len(before_ids))
 
         self.messages = [{"role": "user", "content": user_content}]
-        encoded = tokenizer.apply_chat_template(
+        encoded = apply_chat_template_with_thinking(
+            tokenizer,
             self.messages,
+            enable_thinking=self.enable_thinking,
             return_tensors="pt",
             add_generation_prompt=True,
         )
