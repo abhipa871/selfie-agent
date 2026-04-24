@@ -48,23 +48,100 @@ def _dedupe_repeated_content_lines(s: str, *, min_len: int = 12) -> str:
     return u
 
 
-def strip_gemma4_thought_channel(text: str) -> str:
-    """Remove Gemma 4 *thought* channel blocks and leftover channel artifacts from a string.
+def is_gemma4_layout_or_control_piece(piece: str) -> bool:
+    """True if a single token string is only a Gemma 4 *layout* / control fragment."""
+    t = piece.strip()
+    if not t:
+        return True
+    if t.lower() == "thought" and len(t) < 24:
+        return True
+    if t in "\n" or (len(t) == 1 and t.isspace()):
+        return True
+    if t == "``" or t in ("<|channel>",) or re.match(
+        r"^<\s*(?:turn\|>|\|turn\|>|\|channel>)$", t, re.IGNORECASE
+    ):
+        return True
+    if re.match(
+        r"^<\s*(?:/?turn|/?channel|/?pad|/?eos|/?bos|end_of_turn|/?s)\b[^<]{0,40}\|>?\s*$",
+        t,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.match(r"^<\s*turn\s*\|>\s*$", t, re.IGNORECASE):
+        return True
+    if re.match(r"^<\s*/?channel[^>]*\|>\s*$", t, re.IGNORECASE):
+        return True
+    if re.match(r"^<\s*\|[^<]{0,36}>\s*$", t, re.IGNORECASE):
+        return True
+    if re.search(r"<\s*pad|<\s*eos|``", t, re.IGNORECASE):
+        return True
+    return False
 
-    Pass text decoded with ``skip_special_tokens=False`` so ``<|channel>`` / ``<channel|>`` are
-    still present; this also repairs the common case where those tags were already skipped and only
-    standalone ``thought`` lines and echoed answer text remain.
+
+def strip_gemma4_display(text: str) -> str:
+    """Remove empty thought block, then turn/channel/pad/specials that leak into decoded strings.
+
+    Use with ``skip_special_tokens=False`` when decoding, then this on the result.
     """
     if not text:
         return text
     s = _RE_GEMMA4_THOUGHT_BLOCK.sub("", text)
-    # Repair path if tags were already removed by ``skip_special_tokens=True`` elsewhere.
     s = _RE_ORPHAN_THOUGHT_LINE.sub("", s)
     s = _dedupe_repeated_content_lines(s)
     s = _dedupe_consecutive_duplicate_lines(s)
-    # If we decoded with ``skip_special_tokens=False``, bare turn markers can remain.
-    s = re.sub(r"<\s*end_of_turn\s*>\s*", "", s, flags=re.IGNORECASE)
+    for _ in range(8):
+        before = s
+        s = re.sub(r"<\s*turn\s*\|>\s*?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*\|turn\|>\s*?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*\|?\s*channel[^>]*\|>\s*?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*/?channel[^>]*\|>\s*?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*end_of_turn\s*>\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*pad[^>]*>\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*eos[^>]*>\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"``\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"``\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"<\s*/?s>\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"``+", "", s)
+        if s == before:
+            break
+    s = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", s)
+    s = re.sub(r"`\s*$", "", s)  # lone HF/placeholder backtick at end
     return s.strip()
+
+
+def strip_gemma4_thought_channel(text: str) -> str:
+    """Back-compat alias: full Gemma 4 *display* cleanup (thought block + turn/channel junk)."""
+    return strip_gemma4_display(text)
+
+
+def trim_trailing_gemma4_layout_global_indices(
+    tokenizer: Any, input_ids_row, global_indices: list[int] | list,
+) -> list[int]:
+    """Remove trailing *layout-only* token positions (e.g. ``<turn|>`` after the final-answer text)."""
+    if not global_indices:
+        return list(global_indices)
+
+    out: list[int] = list(global_indices)
+    # Try layout-token detection first, then *clean* equality trim.
+    while len(out) > 0:
+        tids = [int(input_ids_row[i].item()) for i in out]
+        last = tokenizer.decode([tids[-1]], skip_special_tokens=False)
+        if is_gemma4_layout_or_control_piece(last):
+            out.pop()
+            continue
+        if len(out) < 2:
+            break
+        tids1 = tids
+        tids0 = tids[:-1]
+        full = tokenizer.decode(tids1, skip_special_tokens=False)
+        prev = tokenizer.decode(tids0, skip_special_tokens=False) if tids0 else ""
+        c_full = strip_gemma4_display(full)
+        c_prev = strip_gemma4_display(prev)
+        if c_full and c_full == c_prev:
+            out.pop()
+            continue
+        break
+    return out
 
 
 def _leading_block_end_char(assistant_text: str) -> int:

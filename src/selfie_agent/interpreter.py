@@ -11,7 +11,11 @@ from .compat import (
     interpretation_user_prompt_sequence,
     resolve_model_device,
 )
-from .gemma4 import count_leading_gemma4_thought_tokens, strip_gemma4_thought_channel
+from .gemma4 import (
+    count_leading_gemma4_thought_tokens,
+    strip_gemma4_display,
+    trim_trailing_gemma4_layout_global_indices,
+)
 from .generation import build_generation_kwargs
 from .prompts import InterpretationPrompt
 from .utils import clean_thinking
@@ -248,6 +252,10 @@ class SelfieInterpreter:
                 answer_indices = answer_indices[n_skip:]
             elif n_skip and n_skip >= len(answer_indices):
                 answer_indices = []
+            if answer_indices:
+                answer_indices = trim_trailing_gemma4_layout_global_indices(
+                    self.tokenizer, input_ids, answer_indices
+                )
 
         answer_hs = tuple(layer_hs[answer_indices, :] for layer_hs in full_hs)
         return outputs, answer_hs, answer_indices
@@ -338,11 +346,11 @@ class SelfieInterpreter:
         def _postprocess_visible_text(s: str) -> str:
             if enable_thinking:
                 return s.strip()
-            s = strip_gemma4_thought_channel(s)
+            s = strip_gemma4_display(s)
             return clean_thinking(s)
 
         # Do not use ``skip_special_tokens=True`` here: it drops ``<|channel>`` / ``<channel|>`` so
-        # :func:`strip_gemma4_thought_channel` cannot see them. That path also repair-heals orphan
+        # :func:`strip_gemma4_display` cannot see them. That path also repair-heals orphan
         # ``thought`` lines if tags were already skipped.
         row = original_sequences[0]
         original_full_text = _postprocess_visible_text(
@@ -443,8 +451,33 @@ class SelfieInterpreter:
             "interpretation_prompt": interpretation_prompt,
         }
 
-    def show_answer_tokens(self, original_sequences, prompt_len: int):
+    def show_answer_tokens(
+        self,
+        original_sequences: torch.LongTensor,
+        prompt_len: int,
+        *,
+        only_global_indices: Sequence[int] | None = None,
+    ):
+        """Debug rows for answer tokens. If ``only_global_indices`` is set (e.g. ``result["answer_indices"]``),
+        only those positions are included so indices align with the trimmed *final-answer* span.
+        """
         toks = original_sequences[0]
+        if only_global_indices is not None:
+            rows = []
+            for answer_i, global_i in enumerate(only_global_indices):
+                g = int(global_i)
+                if g < 0 or g >= toks.shape[0]:
+                    continue
+                tid = toks[g].item()
+                rows.append(
+                    {
+                        "answer_idx": answer_i,
+                        "global_idx": g,
+                        "token_id": tid,
+                        "decoded": repr(self.tokenizer.decode([tid], skip_special_tokens=False)),
+                    }
+                )
+            return rows
         rows = []
         answer_i = 0
         answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
@@ -461,7 +494,7 @@ class SelfieInterpreter:
                     "answer_idx": answer_i,
                     "global_idx": global_i,
                     "token_id": tid,
-                    "decoded": repr(self.tokenizer.decode([tid])),
+                    "decoded": repr(self.tokenizer.decode([tid], skip_special_tokens=False)),
                 }
             )
             answer_i += 1
