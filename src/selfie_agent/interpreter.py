@@ -11,6 +11,7 @@ from .compat import (
     interpretation_user_prompt_sequence,
     resolve_model_device,
 )
+from .gemma4 import count_leading_gemma4_thought_tokens, strip_gemma4_thought_channel
 from .generation import build_generation_kwargs
 from .prompts import InterpretationPrompt
 from .utils import clean_thinking
@@ -193,12 +194,19 @@ class SelfieInterpreter:
         sequences: torch.LongTensor,
         answer_only: bool = True,
         prompt_len: int | None = None,
+        *,
+        enable_thinking: bool = False,
     ):
         """Return hidden states sliced to relevant token positions.
 
         When ``answer_only=False``, ``prompt_len`` is required. Indices exclude stream-start specials
         (e.g. BOS / ``<|begin_of_text|>``) and leading whitespace-only tokens at the start of the
         generated continuation (so layout / sentence-initial spacing is not treated as content).
+
+        For Gemma 4, when ``enable_thinking=False`` (reasoning *disabled* in the template), the model
+        may still emit a leading empty ``<|channel>thought`` … ``<channel|>`` block; that prefix is
+        removed from the slice. When ``enable_thinking=True``, the full block including internal
+        reasoning tokens is kept in ``answer_indices``.
         """
         with torch.no_grad():
             outputs = self.model(
@@ -222,7 +230,7 @@ class SelfieInterpreter:
 
         input_ids = sequences[0]
         answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
-        answer_indices = []
+        answer_indices: List[int] = []
         for i in range(prompt_len, input_ids.shape[0]):
             token_id = input_ids[i].item()
             if self.tokenizer.pad_token_id is not None and token_id == self.tokenizer.pad_token_id:
@@ -230,6 +238,16 @@ class SelfieInterpreter:
             if token_id in answer_stop_ids:
                 break
             answer_indices.append(i)
+
+        if not enable_thinking and answer_indices:
+            n_skip = count_leading_gemma4_thought_tokens(
+                self.tokenizer,
+                [input_ids[i].item() for i in answer_indices],
+            )
+            if n_skip and n_skip < len(answer_indices):
+                answer_indices = answer_indices[n_skip:]
+            elif n_skip and n_skip >= len(answer_indices):
+                answer_indices = []
 
         answer_hs = tuple(layer_hs[answer_indices, :] for layer_hs in full_hs)
         return outputs, answer_hs, answer_indices
@@ -272,6 +290,10 @@ class SelfieInterpreter:
         ``enable_thinking`` is passed to ``apply_chat_template`` only if the tokenizer defines that
         argument (default ``False``). Ignored otherwise. For a custom :class:`InterpretationPrompt`, set
         ``enable_thinking`` on that object; this parameter applies only when the default prompt is built.
+        For **Gemma 4**, with ``enable_thinking=True`` the leading ``<|channel>thought`` …
+        ``<channel|>`` span (including internal reasoning) is **kept** in ``answer_indices`` and
+        in decoded text; with ``False``, that prefix is removed so only the final-answer surface
+        text and token span remain (see ``get_hidden_states_from_sequences``).
 
         Optional ``generation_kwargs`` / ``interpreter_generation_kwargs`` (and the same on
         ``SelfieInterpreter(...)``) are merged into ``model.generate`` after required keys
@@ -305,18 +327,35 @@ class SelfieInterpreter:
             )
 
         original_sequences = original_gen.sequences
-        original_full_text = clean_thinking(
-            self.tokenizer.decode(original_sequences[0], skip_special_tokens=True)
-        )
-        original_answer = clean_thinking(
-            self.tokenizer.decode(original_sequences[0][original_prompt_len:], skip_special_tokens=True)
-        )
 
         _, source_hs, answer_indices = self.get_hidden_states_from_sequences(
             sequences=original_sequences,
             answer_only=answer_only,
             prompt_len=original_prompt_len,
+            enable_thinking=enable_thinking,
         )
+
+        def _postprocess_visible_text(s: str) -> str:
+            if enable_thinking:
+                return s.strip()
+            s = strip_gemma4_thought_channel(s)
+            return clean_thinking(s)
+
+        row = original_sequences[0]
+        original_full_text = _postprocess_visible_text(
+            self.tokenizer.decode(row, skip_special_tokens=True)
+        )
+        if answer_only and answer_indices:
+            a0, a1 = int(answer_indices[0]), int(answer_indices[-1]) + 1
+            original_answer = _postprocess_visible_text(
+                self.tokenizer.decode(row[a0:a1], skip_special_tokens=True)
+            )
+        elif answer_only:
+            original_answer = ""
+        else:
+            original_answer = _postprocess_visible_text(
+                self.tokenizer.decode(row[original_prompt_len:], skip_special_tokens=True)
+            )
 
         if tokens_to_interpret == "all":
             if source_layer is None:
@@ -381,8 +420,8 @@ class SelfieInterpreter:
             injection_mode=injection_mode,
         )
 
-        interpretation_answers = [clean_thinking(x) for x in result["decoded_texts"]]
-        interpretation_full_texts = [clean_thinking(x) for x in result["full_texts"]]
+        interpretation_answers = [_postprocess_visible_text(x) for x in result["decoded_texts"]]
+        interpretation_full_texts = [_postprocess_visible_text(x) for x in result["full_texts"]]
 
         return {
             "original_full_text": original_full_text,

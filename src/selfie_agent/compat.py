@@ -27,6 +27,16 @@ def interpretation_user_prompt_sequence(
     )
 
 
+def _apply_chat_accepts_thinking_kw(tokenizer) -> bool:
+    try:
+        params = inspect.signature(tokenizer.apply_chat_template).parameters
+    except (TypeError, ValueError):
+        return False
+    if "enable_thinking" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def apply_chat_template_with_thinking(
     tokenizer,
     conversation,
@@ -34,15 +44,15 @@ def apply_chat_template_with_thinking(
     enable_thinking: bool = False,
     **kwargs: Any,
 ) -> Any:
-    """Call ``apply_chat_template``, passing ``enable_thinking`` only if the tokenizer supports it."""
-    try:
-        params = inspect.signature(tokenizer.apply_chat_template).parameters
-    except (TypeError, ValueError):
-        return tokenizer.apply_chat_template(conversation, **kwargs)
+    """Call ``apply_chat_template``, passing ``enable_thinking`` when the method can accept it."""
     call_kw = dict(kwargs)
-    if "enable_thinking" in params:
-        call_kw["enable_thinking"] = enable_thinking
-    return tokenizer.apply_chat_template(conversation, **call_kw)
+    try:
+        if _apply_chat_accepts_thinking_kw(tokenizer):
+            call_kw["enable_thinking"] = enable_thinking
+        return tokenizer.apply_chat_template(conversation, **call_kw)
+    except TypeError:
+        call_kw.pop("enable_thinking", None)
+        return tokenizer.apply_chat_template(conversation, **call_kw)
 
 
 def get_decoder_layers(model) -> nn.Module:
