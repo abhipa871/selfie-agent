@@ -341,20 +341,23 @@ class SelfieInterpreter:
             s = strip_gemma4_thought_channel(s)
             return clean_thinking(s)
 
+        # Do not use ``skip_special_tokens=True`` here: it drops ``<|channel>`` / ``<channel|>`` so
+        # :func:`strip_gemma4_thought_channel` cannot see them. That path also repair-heals orphan
+        # ``thought`` lines if tags were already skipped.
         row = original_sequences[0]
         original_full_text = _postprocess_visible_text(
-            self.tokenizer.decode(row, skip_special_tokens=True)
+            self.tokenizer.decode(row, skip_special_tokens=False)
         )
         if answer_only and answer_indices:
             a0, a1 = int(answer_indices[0]), int(answer_indices[-1]) + 1
             original_answer = _postprocess_visible_text(
-                self.tokenizer.decode(row[a0:a1], skip_special_tokens=True)
+                self.tokenizer.decode(row[a0:a1], skip_special_tokens=False)
             )
         elif answer_only:
             original_answer = ""
         else:
             original_answer = _postprocess_visible_text(
-                self.tokenizer.decode(row[original_prompt_len:], skip_special_tokens=True)
+                self.tokenizer.decode(row[original_prompt_len:], skip_special_tokens=False)
             )
 
         if tokens_to_interpret == "all":
@@ -418,6 +421,7 @@ class SelfieInterpreter:
             replacing_mode=replacing_mode,
             overlay_strength=overlay_strength,
             injection_mode=injection_mode,
+            decode_skip_special_tokens=False,
         )
 
         interpretation_answers = [_postprocess_visible_text(x) for x in result["decoded_texts"]]
@@ -558,6 +562,8 @@ class SelfieInterpreter:
         replacing_mode: str,
         overlay_strength: float,
         injection_mode: str,
+        *,
+        decode_skip_special_tokens: bool = False,
     ):
         if injection_mode not in {"batch", "aligned"}:
             raise ValueError("injection_mode must be 'batch' or 'aligned'")
@@ -623,8 +629,13 @@ class SelfieInterpreter:
             return {
                 "outputs": outputs,
                 "sequences": sequences,
-                "decoded_texts": self.tokenizer.batch_decode(sequences[:, prompt_len:], skip_special_tokens=True),
-                "full_texts": self.tokenizer.batch_decode(sequences, skip_special_tokens=True),
+                "decoded_texts": self.tokenizer.batch_decode(
+                    sequences[:, prompt_len:],
+                    skip_special_tokens=decode_skip_special_tokens,
+                ),
+                "full_texts": self.tokenizer.batch_decode(
+                    sequences, skip_special_tokens=decode_skip_special_tokens
+                ),
                 "batch_insert_infos": batch_insert_infos,
                 "target_prompt_len": prompt_len,
                 "injection_mode": injection_mode,
