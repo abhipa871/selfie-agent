@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
 
 import torch
 
@@ -20,6 +20,32 @@ def _pad_id(tokenizer) -> int:
     if tokenizer.eos_token_id is not None:
         return int(tokenizer.eos_token_id)
     raise ValueError("Tokenizer has neither pad_token_id nor eos_token_id")
+
+
+def _stop_ids_for_answer_span(tokenizer) -> Set[int]:
+    """Token ids that end the assistant 'answer' for hidden-state / debug slices (Gemma eot, EOS, Qwen im_end, …)."""
+    s: set[int] = set()
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if eos is not None:
+        if isinstance(eos, (list, tuple)):
+            s.update(int(x) for x in eos)
+        else:
+            s.add(int(eos))
+    for attr in ("eot_id", "im_end_id"):
+        tid = getattr(tokenizer, attr, None)
+        if tid is not None:
+            s.add(int(tid))
+    for marker in (
+        # Gemma 2, etc. (if encoded as a single id; closes assistant turn)
+        "<" + "end" + "of" + "turn" + ">",
+    ):
+        try:
+            ids = tokenizer.encode(marker, add_special_tokens=False)
+        except Exception:
+            continue
+        if len(ids) == 1:
+            s.add(int(ids[0]))
+    return s
 
 
 class SelfieInterpreter:
@@ -76,13 +102,14 @@ class SelfieInterpreter:
             raise ValueError("prompt_len must be provided when answer_only=True")
 
         input_ids = sequences[0]
+        answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
         answer_indices = []
         for i in range(prompt_len, input_ids.shape[0]):
             token_id = input_ids[i].item()
-            if self.tokenizer.eos_token_id is not None and token_id == self.tokenizer.eos_token_id:
-                break
             if self.tokenizer.pad_token_id is not None and token_id == self.tokenizer.pad_token_id:
                 continue
+            if token_id in answer_stop_ids:
+                break
             answer_indices.append(i)
 
         answer_hs = tuple(layer_hs[answer_indices, :] for layer_hs in full_hs)
@@ -224,13 +251,14 @@ class SelfieInterpreter:
         toks = original_sequences[0]
         rows = []
         answer_i = 0
+        answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
 
         for global_i in range(prompt_len, toks.shape[0]):
             tid = toks[global_i].item()
-            if self.tokenizer.eos_token_id is not None and tid == self.tokenizer.eos_token_id:
-                break
             if self.tokenizer.pad_token_id is not None and tid == self.tokenizer.pad_token_id:
                 continue
+            if tid in answer_stop_ids:
+                break
 
             rows.append(
                 {
