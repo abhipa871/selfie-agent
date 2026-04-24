@@ -23,7 +23,8 @@ result = agent.interpret(
     original_prompt="What's the highest mountain in the world? Answer in 10 words.",
     tokens_to_interpret="all",
     target_layer=0,
-    max_new_tokens=120,
+    original_max_new_tokens=32,
+    interpreter_max_new_tokens=120,
     injection_mode="aligned",
 )
 

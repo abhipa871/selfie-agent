@@ -62,14 +62,19 @@ class SelfieInterpreter:
         tokens_to_interpret: Sequence[Tuple[int, int]] | str,
         interpretation_prompt: InterpretationPrompt | None = None,
         target_layer: int = 0,
-        max_new_tokens: int = 64,
         original_max_new_tokens: int = 20,
+        interpreter_max_new_tokens: int = 64,
         replacing_mode: str = "normalized",
         overlay_strength: float = 1.0,
         answer_only: bool = True,
         injection_mode: str = "batch",
         interpretation_suffix: str = "Summarize this message in two sentences:",
     ) -> Dict[str, Any]:
+        """Run the original model generate pass, then the interpretation generate pass with injection.
+
+        original_max_new_tokens limits the first completion (source hidden states).
+        interpreter_max_new_tokens limits tokens in the interpretation pass after injection.
+        """
         original_input_ids, original_attention_mask = self._encode_chat_prompt(original_prompt)
         original_prompt_len = original_input_ids.shape[1]
 
@@ -128,7 +133,7 @@ class SelfieInterpreter:
             target_layer=target_layer,
             tokens_to_interpret=tokens_to_interpret,  # type: ignore[arg-type]
             target_insert_locations=interpretation_prompt.insert_locations,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=interpreter_max_new_tokens,
             replacing_mode=replacing_mode,
             overlay_strength=overlay_strength,
             injection_mode=injection_mode,
