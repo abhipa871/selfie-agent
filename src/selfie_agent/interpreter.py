@@ -92,7 +92,45 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
                 ids.add(tid)
     return sorted(ids)
 
+def _special_token_ids_to_drop(tokenizer) -> set[int]:
+    ids = set()
 
+    for attr in ("bos_token_id", "eos_token_id", "pad_token_id", "unk_token_id"):
+        tid = getattr(tokenizer, attr, None)
+        if tid is None:
+            continue
+        if isinstance(tid, (list, tuple)):
+            ids.update(int(x) for x in tid)
+        else:
+            ids.add(int(tid))
+
+    for tok in (
+        "<bos>",
+        "<eos>",
+        "<pad>",
+        "<start_of_turn>",
+        "<end_of_turn>",
+        "<end_of_turn>\n",
+        "<|begin_of_text|>",
+        "<|end_of_text|>",
+        "<|eot_id|>",
+        "<|im_end|>",
+    ):
+        try:
+            tid = tokenizer.convert_tokens_to_ids(tok)
+            if tid is not None and tid >= 0:
+                ids.add(int(tid))
+        except Exception:
+            pass
+
+        try:
+            enc = tokenizer.encode(tok, add_special_tokens=False)
+            if len(enc) == 1:
+                ids.add(int(enc[0]))
+        except Exception:
+            pass
+
+    return ids
 def _prefix_stream_control_token_indices(tokenizer, seq: List[int]) -> Set[int]:
     """Contiguous indices from position 0 that are BOS / stream-start specials (not conversational content)."""
     if not seq:
@@ -259,12 +297,20 @@ class SelfieInterpreter:
         input_ids = sequences[0]
         answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
         answer_indices: List[int] = []
+        drop_ids = _special_token_ids_to_drop(self.tokenizer)
+        stop_ids = _stop_ids_for_answer_span(self.tokenizer)
+
+        answer_indices = []
+
         for i in range(prompt_len, input_ids.shape[0]):
-            token_id = input_ids[i].item()
-            if self.tokenizer.pad_token_id is not None and token_id == self.tokenizer.pad_token_id:
-                continue
-            if token_id in answer_stop_ids:
+            token_id = int(input_ids[i].item())
+
+            if token_id in stop_ids:
                 break
+
+            if token_id in drop_ids:
+                continue
+
             answer_indices.append(i)
 
         answer_hs = tuple(layer_hs[answer_indices, :] for layer_hs in full_hs)
@@ -485,41 +531,26 @@ class SelfieInterpreter:
         toks = original_sequences[0]
         if only_global_indices is not None:
             rows = []
-            for answer_i, global_i in enumerate(only_global_indices):
-                g = int(global_i)
-                if g < 0 or g >= toks.shape[0]:
+            drop_ids = _special_token_ids_to_drop(self.tokenizer)
+            answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
+
+            for global_i in range(prompt_len, toks.shape[0]):
+                tid = int(toks[global_i].item())
+
+                if tid in answer_stop_ids:
+                    break
+
+                if tid in drop_ids:
                     continue
-                tid = toks[g].item()
-                rows.append(
-                    {
-                        "answer_idx": answer_i,
-                        "global_idx": g,
-                        "token_id": tid,
-                        "decoded": repr(self.tokenizer.decode([tid], skip_special_tokens=False)),
-                    }
-                )
-            return rows
-        rows = []
-        answer_i = 0
-        answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
 
-        for global_i in range(prompt_len, toks.shape[0]):
-            tid = toks[global_i].item()
-            if self.tokenizer.pad_token_id is not None and tid == self.tokenizer.pad_token_id:
-                continue
-            if tid in answer_stop_ids:
-                break
-
-            rows.append(
-                {
+                rows.append({
                     "answer_idx": answer_i,
                     "global_idx": global_i,
                     "token_id": tid,
                     "decoded": repr(self.tokenizer.decode([tid], skip_special_tokens=False)),
-                }
-            )
-            answer_i += 1
-
+                })
+                answer_i += 1
+       
         return rows
 
     def _encode_chat_prompt(self, prompt: str, enable_thinking: bool = False):
