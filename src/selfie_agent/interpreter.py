@@ -4,8 +4,22 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import torch
 
+from .compat import (
+    InterpretationStyle,
+    get_decoder_layers,
+    interpretation_user_prompt_sequence,
+    resolve_model_device,
+)
 from .prompts import InterpretationPrompt
 from .utils import clean_thinking
+
+
+def _pad_id(tokenizer) -> int:
+    if tokenizer.pad_token_id is not None:
+        return int(tokenizer.pad_token_id)
+    if tokenizer.eos_token_id is not None:
+        return int(tokenizer.eos_token_id)
+    raise ValueError("Tokenizer has neither pad_token_id nor eos_token_id")
 
 
 class SelfieInterpreter:
@@ -17,10 +31,23 @@ class SelfieInterpreter:
         self,
         num_placeholders: int,
         suffix: str = "Summarize this message in two sentences:",
+        style: InterpretationStyle = "universal",
     ) -> InterpretationPrompt:
+        """Build an :class:`InterpretationPrompt` for the loaded tokenizer's chat template.
+
+        Use ``style="gemma"`` or ``"qwen"`` (or default ``"universal"``) for Gemma 2, Qwen 3, Qwen 2.5, etc. —
+        only the tokenizer's ``apply_chat_template`` wraps the user text, without Llama-2 ``[INST]`` markers.
+
+        For legacy prompts that match original Llama-2-Chat *user* strings with ``[INST]...[/INST]`` inside
+        the user turn, pass ``style="llama_instruct"``.
+        """
         return InterpretationPrompt(
             self.tokenizer,
-            tuple(["[INST]"] + [0] * num_placeholders + [f"[/INST] {suffix}"]),
+            interpretation_user_prompt_sequence(
+                num_placeholders,
+                suffix,
+                style,
+            ),
         )
 
     def get_hidden_states_from_sequences(
@@ -31,7 +58,7 @@ class SelfieInterpreter:
     ):
         with torch.no_grad():
             outputs = self.model(
-                input_ids=sequences.to(self.model.device),
+                input_ids=sequences.to(resolve_model_device(self.model)),
                 output_hidden_states=True,
                 return_dict=True,
             )
@@ -69,15 +96,20 @@ class SelfieInterpreter:
         answer_only: bool = True,
         injection_mode: str = "batch",
         interpretation_suffix: str = "Summarize this message in two sentences:",
+        interpretation_style: InterpretationStyle = "universal",
     ) -> Dict[str, Any]:
         """Run the original model generate pass, then the interpretation generate pass with injection.
 
         original_max_new_tokens limits the first completion (source hidden states).
         interpreter_max_new_tokens limits tokens in the interpretation pass after injection.
+        For Gemma 2, Qwen 3, Qwen 2.5, and similar, keep ``interpretation_style`` as ``"universal"``
+        (or ``"gemma"`` / ``"qwen"``, which are equivalent). Use ``interpretation_style="llama_instruct"``
+        for legacy Llama-2-Chat ``[INST]``-style user strings.
         """
         original_input_ids, original_attention_mask = self._encode_chat_prompt(original_prompt)
         original_prompt_len = original_input_ids.shape[1]
 
+        pad_id = _pad_id(self.tokenizer)
         with torch.no_grad():
             original_gen = self.model.generate(
                 input_ids=original_input_ids,
@@ -85,7 +117,7 @@ class SelfieInterpreter:
                 max_new_tokens=original_max_new_tokens,
                 do_sample=False,
                 eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=pad_id,
                 return_dict_in_generate=True,
             )
 
@@ -112,6 +144,7 @@ class SelfieInterpreter:
             interpretation_prompt = self.make_interpretation_prompt(
                 num_placeholders=len(tokens_to_interpret),
                 suffix=interpretation_suffix,
+                style=interpretation_style,
             )
 
         if injection_mode == "aligned" and len(tokens_to_interpret) != len(
@@ -121,8 +154,9 @@ class SelfieInterpreter:
                 "aligned mode requires the same number of tokens and placeholder positions"
             )
 
+        dev = resolve_model_device(self.model)
         target_inputs = {
-            key: (value.to(self.model.device) if value is not None else None)
+            key: (value.to(dev) if value is not None else None)
             for key, value in interpretation_prompt.interpretation_prompt_model_inputs.items()
         }
 
@@ -183,6 +217,7 @@ class SelfieInterpreter:
         return rows
 
     def _encode_chat_prompt(self, prompt: str):
+        dev = resolve_model_device(self.model)
         messages = [{"role": "user", "content": prompt}]
         encoded = self.tokenizer.apply_chat_template(
             messages,
@@ -190,22 +225,15 @@ class SelfieInterpreter:
             add_generation_prompt=True,
         )
         if hasattr(encoded, "input_ids"):
-            input_ids = encoded.input_ids.to(self.model.device)
+            input_ids = encoded.input_ids.to(dev)
             attention_mask = (
-                encoded.attention_mask.to(self.model.device)
-                if getattr(encoded, "attention_mask", None) is not None
-                else None
+                encoded.attention_mask.to(dev) if getattr(encoded, "attention_mask", None) is not None else None
             )
             return input_ids, attention_mask
-        return encoded.to(self.model.device), None
+        return encoded.to(dev), None
 
     def _get_layers(self):
-        inner = self.model.model
-        if hasattr(inner, "layers"):
-            return inner.layers
-        if hasattr(inner, "language_model") and hasattr(inner.language_model, "layers"):
-            return inner.language_model.layers
-        raise ValueError("Could not find decoder layers")
+        return get_decoder_layers(self.model)
 
     @staticmethod
     def _make_pre_hook(batch_insert_infos: Iterable[Dict[str, Any]]):
@@ -335,6 +363,7 @@ class SelfieInterpreter:
             expanded_input_ids = input_ids.repeat(batch_size, 1)
             expanded_attention_mask = attention_mask.repeat(batch_size, 1) if attention_mask is not None else None
             prompt_len = expanded_input_ids.shape[1]
+            pad_id = _pad_id(self.tokenizer)
 
             outputs = self.model.generate(
                 input_ids=expanded_input_ids,
@@ -342,7 +371,7 @@ class SelfieInterpreter:
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 eos_token_id=self.tokenizer.eos_token_id,
-                pad_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=pad_id,
                 return_dict_in_generate=True,
             )
             sequences = outputs.sequences

@@ -26,15 +26,22 @@ result = agent.interpret(
     original_max_new_tokens=32,
     interpreter_max_new_tokens=120,
     injection_mode="aligned",
+    # For Llama-2-70b-chat, use the legacy in-user-turn INST framing (see below).
+    interpretation_style="llama_instruct",
 )
 
 print(result["original_answer"])
 print(result["interpretation_answers"][0])
 ```
 
+**Gemma 2 and Qwen 3 / 2.5** use the same chat templates as in Hugging Face; use the default interpretation framing (or pass `interpretation_style="gemma"` or `"qwen"`, which are equivalent to `"universal"`). Pass `style="llama_instruct"` to `make_interpretation_prompt` (or `interpretation_style="llama_instruct"` to `interpret`) only for older Llama-2-Chat–style user strings that embed INST open/close markers in the user turn.
+
+If a checkpoint requires custom modeling code, use `ModelLoader().load("namespace/model", trust_remote_code=True)`.
+
 ## Package Layout
 
 - `selfie_agent.loader`: model/tokenizer loading
+- `selfie_agent.compat`: interpretation prompt styles, decoder layer lookup, device resolution
 - `selfie_agent.prompts`: interpretation prompt construction
 - `selfie_agent.interpreter`: hidden-state extraction, injection, and interpretation pipeline
 - `selfie_agent.utils`: small shared helpers
