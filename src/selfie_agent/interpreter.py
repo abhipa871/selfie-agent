@@ -50,6 +50,8 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
     unk_id = getattr(tokenizer, "unk_token_id", None)
     for marker in (
         "<end_of_turn>",  # Gemma 2 (assistant turn)
+        "<|turn|>",  # Gemma 3/4
+        "<turn|>",
         "<|im_end|>",  # ChatML-style assistant end
     ):
         try:
@@ -147,6 +149,15 @@ def _eos_token_id_for_generate(tokenizer) -> int | List[int] | None:
 def _stop_ids_for_answer_span(tokenizer) -> Set[int]:
     """Token ids that end the assistant 'answer' for hidden-state / debug slices (Gemma eot, EOS, im_end, …)."""
     return set(_eos_token_ids_for_stopping(tokenizer))
+
+
+def answer_stop_id_set(tokenizer) -> Set[int]:
+    """Return the same set of token ids used to delimit the assistant *answer* in this package.
+
+    Use with custom loops over token ids (e.g. mirroring :meth:`show_answer_tokens`) instead of
+    checking only ``tokenizer.eos_token_id``, which misses Gemma-style additional stop tokens.
+    """
+    return _stop_ids_for_answer_span(tokenizer)
 
 
 class SelfieInterpreter:
@@ -458,8 +469,14 @@ class SelfieInterpreter:
         *,
         only_global_indices: Sequence[int] | None = None,
     ):
-        """Debug rows for answer tokens. If ``only_global_indices`` is set (e.g. ``result["answer_indices"]``),
-        only those positions are included so indices align with the trimmed *final-answer* span.
+        """Build per-token debug rows for the model output after ``prompt_len``.
+
+        **Alignment with** :meth:`interpret` / ``"tokens_to_interpret"`` **(recommended):** pass
+        ``only_global_indices=result["answer_indices"]`` so each ``rows[i]`` is the *same* global
+        position the interpreter used for the trimmed final-answer span. Otherwise, rows follow the
+        raw stream until a *stop* id (see :func:`answer_stop_id_set`); for Gemma that includes
+        turn / end-of-sequence style markers, not only ``eos`` — do not reimplement stop logic
+        with ``eos`` alone.
         """
         toks = original_sequences[0]
         if only_global_indices is not None:

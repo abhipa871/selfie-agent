@@ -48,6 +48,24 @@ def _dedupe_repeated_content_lines(s: str, *, min_len: int = 12) -> str:
     return u
 
 
+def _norm_stanza(x: str) -> str:
+    return " ".join(x.split())
+
+
+def _collapse_duplicate_stanzas(s: str, *, min_stanza_len: int = 12) -> str:
+    """If the text is the same paragraph repeated, separated by blank line(s), keep one copy."""
+    if not s or len(s) < min_stanza_len:
+        return s
+    parts = re.split(r"\n{2,}", s)
+    stripped = [p.strip() for p in parts if p.strip()]
+    if len(stripped) < 2:
+        return s
+    norms = [_norm_stanza(t) for t in stripped]
+    if len(set(norms)) == 1 and len(norms[0]) >= min_stanza_len:
+        return stripped[0]
+    return s
+
+
 def is_gemma4_layout_or_control_piece(piece: str) -> bool:
     """True if a single token string is only a Gemma 4 *layout* / control fragment."""
     t = piece.strip()
@@ -89,6 +107,7 @@ def strip_gemma4_display(text: str) -> str:
     s = _RE_ORPHAN_THOUGHT_LINE.sub("", s)
     s = _dedupe_repeated_content_lines(s)
     s = _dedupe_consecutive_duplicate_lines(s)
+    s = _collapse_duplicate_stanzas(s)
     for _ in range(8):
         before = s
         s = re.sub(r"<\s*turn\s*\|>\s*?", "", s, flags=re.IGNORECASE)
@@ -106,6 +125,8 @@ def strip_gemma4_display(text: str) -> str:
             break
     s = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", s)
     s = re.sub(r"`\s*$", "", s)  # lone HF/placeholder backtick at end
+    s = s.strip()
+    s = _collapse_duplicate_stanzas(s)
     return s.strip()
 
 
