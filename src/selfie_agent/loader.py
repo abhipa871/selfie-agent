@@ -14,6 +14,13 @@ class ModelLoader:
     ) -> Tuple[AutoModelForCausalLM, AutoTokenizer, AutoConfig]:
         bnb_config = None
         if four_bit_quant:
+            try:
+                import bitsandbytes  # noqa: F401
+            except ImportError as e:
+                raise ImportError(
+                    "four_bit_quant=True requires bitsandbytes. Reinstall the package or run: "
+                    "pip install 'bitsandbytes>=0.46.1'"
+                ) from e
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.bfloat16,
