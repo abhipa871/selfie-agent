@@ -32,6 +32,7 @@ class SelfieInterpreter:
         num_placeholders: int,
         suffix: str = "Summarize this message in two sentences:",
         style: InterpretationStyle = "universal",
+        placeholder: str = "- ",
     ) -> InterpretationPrompt:
         """Build an :class:`InterpretationPrompt` for the loaded tokenizer's chat template.
 
@@ -40,6 +41,9 @@ class SelfieInterpreter:
 
         For legacy prompts that match original Llama-2-Chat *user* strings with ``[INST]...[/INST]`` inside
         the user turn, pass ``style="llama_instruct"``.
+
+        ``placeholder`` is appended for each ``0`` in the built sequence; it must add exactly one token
+        with this tokenizer and chat template (see :class:`InterpretationPrompt`).
         """
         return InterpretationPrompt(
             self.tokenizer,
@@ -48,6 +52,7 @@ class SelfieInterpreter:
                 suffix,
                 style,
             ),
+            placeholder=placeholder,
         )
 
     def get_hidden_states_from_sequences(
@@ -98,6 +103,7 @@ class SelfieInterpreter:
         interpretation_suffix: str = "Summarize this message in two sentences:",
         interpretation_style: InterpretationStyle = "universal",
         source_layer: int | None = None,
+        placeholder: str = "- ",
     ) -> Dict[str, Any]:
         """Run the original model generate pass, then the interpretation generate pass with injection.
 
@@ -110,6 +116,9 @@ class SelfieInterpreter:
         For Gemma 2, Qwen 3, Qwen 2.5, and similar, keep ``interpretation_style`` as ``"universal"``
         (or ``"gemma"`` / ``"qwen"``, which are equivalent). Use ``interpretation_style="llama_instruct"``
         for legacy Llama-2-Chat ``[INST]``-style user strings.
+
+        ``placeholder`` is passed to the default :class:`InterpretationPrompt` only; ignored if you pass
+        ``interpretation_prompt`` yourself.
         """
         original_input_ids, original_attention_mask = self._encode_chat_prompt(original_prompt)
         original_prompt_len = original_input_ids.shape[1]
@@ -163,6 +172,7 @@ class SelfieInterpreter:
                 num_placeholders=len(tokens_to_interpret),
                 suffix=interpretation_suffix,
                 style=interpretation_style,
+                placeholder=placeholder,
             )
 
         if injection_mode == "aligned" and len(tokens_to_interpret) != len(

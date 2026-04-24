@@ -29,6 +29,8 @@ result = agent.interpret(
     injection_mode="aligned",
     # For Llama-2-70b-chat, use the legacy in-user-turn INST framing (see below).
     interpretation_style="llama_instruct",
+    # optional: override default placeholder="- " (each must be 1 token for the tokenizer)
+    # placeholder="_",
 )
 
 print(result["original_answer"])
