@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 # Chat-template-friendly: placeholders + suffix are wrapped by tokenizer.apply_chat_template
-# (Gemma, Qwen, Llama-3, Mistral, etc.). "llama_instruct" keeps the legacy [INST] user-string pattern.
+# (Gemma, Llama-3, Mistral, etc.). "llama_instruct" keeps the legacy [INST] user-string pattern.
 InterpretationStyle = Literal["universal", "llama_instruct", "gemma", "qwen"]
 
 
@@ -23,7 +23,7 @@ def interpretation_user_prompt_sequence(
         return tuple(["[INST]"] + [0] * num_placeholders + [f"[/INST] {suffix}"])
     raise ValueError(
         f"Unknown interpretation style {style!r}. "
-        "Use 'universal' (default; Gemma, Qwen, most chat LMs) or 'llama_instruct' (legacy Llama-2-Chat FRAMING)."
+        "Use 'universal' (default; most chat LMs) or 'llama_instruct' (legacy Llama-2-Chat FRAMING)."
     )
 
 
@@ -34,7 +34,7 @@ def apply_chat_template_with_thinking(
     enable_thinking: bool = False,
     **kwargs: Any,
 ) -> Any:
-    """Call ``apply_chat_template``, passing ``enable_thinking`` only if the tokenizer supports it (Qwen3 / Qwen3.5)."""
+    """Call ``apply_chat_template``, passing ``enable_thinking`` only if the tokenizer supports it."""
     try:
         params = inspect.signature(tokenizer.apply_chat_template).parameters
     except (TypeError, ValueError):

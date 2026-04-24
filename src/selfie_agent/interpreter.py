@@ -11,7 +11,7 @@ from .compat import (
     interpretation_user_prompt_sequence,
     resolve_model_device,
 )
-from .generation import merge_generation_kwargs
+from .generation import build_generation_kwargs
 from .prompts import InterpretationPrompt
 from .utils import clean_thinking
 
@@ -45,7 +45,7 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
     unk_id = getattr(tokenizer, "unk_token_id", None)
     for marker in (
         "<end_of_turn>",  # Gemma 2 (assistant turn)
-        "<|im_end|>",  # Qwen / ChatML assistant end
+        "<|im_end|>",  # ChatML-style assistant end
     ):
         try:
             tid = tokenizer.convert_tokens_to_ids(marker)
@@ -140,7 +140,7 @@ def _eos_token_id_for_generate(tokenizer) -> int | List[int] | None:
 
 
 def _stop_ids_for_answer_span(tokenizer) -> Set[int]:
-    """Token ids that end the assistant 'answer' for hidden-state / debug slices (Gemma eot, EOS, Qwen im_end, …)."""
+    """Token ids that end the assistant 'answer' for hidden-state / debug slices (Gemma eot, EOS, im_end, …)."""
     return set(_eos_token_ids_for_stopping(tokenizer))
 
 
@@ -150,13 +150,11 @@ class SelfieInterpreter:
         model,
         tokenizer,
         *,
-        use_qwen35_sampling: bool = False,
         generation_kwargs: Dict[str, Any] | None = None,
         interpreter_generation_kwargs: Dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
-        self.use_qwen35_sampling = use_qwen35_sampling
         self.generation_kwargs = generation_kwargs
         self.interpreter_generation_kwargs = interpreter_generation_kwargs
 
@@ -170,7 +168,7 @@ class SelfieInterpreter:
     ) -> InterpretationPrompt:
         """Build an :class:`InterpretationPrompt` for the loaded tokenizer's chat template.
 
-        Use ``style="gemma"`` or ``"qwen"`` (or default ``"universal"``) for Gemma 2, Qwen 3, Qwen 2.5, etc. —
+        Use ``style="gemma"`` or ``"qwen"`` (or default ``"universal"``) for Gemma 2 and typical chat LMs —
         only the tokenizer's ``apply_chat_template`` wraps the user text, without Llama-2 ``[INST]`` markers.
 
         For legacy prompts that match original Llama-2-Chat *user* strings with ``[INST]...[/INST]`` inside
@@ -253,7 +251,6 @@ class SelfieInterpreter:
         source_layer: int | None = None,
         placeholder: str = "- ",
         enable_thinking: bool = False,
-        use_qwen35_sampling: bool | None = None,
         generation_kwargs: Dict[str, Any] | None = None,
         interpreter_generation_kwargs: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
@@ -265,24 +262,23 @@ class SelfieInterpreter:
         ``outputs.hidden_states`` (0 = embeddings, 1 = after first block, …) for which block’s
         states to use for all answer positions; use ``-1`` for the last index.
 
-        For Gemma 2, Qwen 3, Qwen 2.5, and similar, keep ``interpretation_style`` as ``"universal"``
+        For Gemma 2 and similar chat models, keep ``interpretation_style`` as ``"universal"``
         (or ``"gemma"`` / ``"qwen"``, which are equivalent). Use ``interpretation_style="llama_instruct"``
         for legacy Llama-2-Chat ``[INST]``-style user strings.
 
         ``placeholder`` is passed to the default :class:`InterpretationPrompt` only; ignored if you pass
         ``interpretation_prompt`` yourself.
 
-        ``enable_thinking`` is passed to ``apply_chat_template`` when the tokenizer supports it (Qwen3 /
-        Qwen3.5 reasoning models). Default ``False`` disables thinking in the template; set ``True`` for
-        full reasoning mode. Ignored for tokenizers without that argument. If you pass a custom
-        :class:`InterpretationPrompt`, set ``enable_thinking`` on that object instead; this parameter
-        only applies when the default prompt is built here.
+        ``enable_thinking`` is passed to ``apply_chat_template`` only if the tokenizer defines that
+        argument (default ``False``). Ignored otherwise. For a custom :class:`InterpretationPrompt`, set
+        ``enable_thinking`` on that object; this parameter applies only when the default prompt is built.
 
-        ``use_qwen35_sampling`` (default: instance ``use_qwen35_sampling``) selects Qwen 3.5-style presets:
-        instruct when ``enable_thinking=False``, reasoning when ``enable_thinking=True``. Per-call
-        ``generation_kwargs`` / ``interpreter_generation_kwargs`` override instance defaults and
-        are merged on top of the preset (when enabled). When sampling is off and no kwargs are
-        given, generation stays greedy (``do_sample=False``).
+        Optional ``generation_kwargs`` / ``interpreter_generation_kwargs`` (and the same on
+        ``SelfieInterpreter(...)``) are merged into ``model.generate`` after required keys
+        (``max_new_tokens``, ``eos_token_id``, ``pad_token_id``, ``return_dict_in_generate``). Values
+        from :func:`selfie_agent.generation.prepare_generation_kwargs` handle ``presence_penalty`` and
+        strip ``min_p=0``. If no extra kwargs are passed, generation uses greedy decoding
+        (``do_sample=False``).
         """
         original_input_ids, original_attention_mask = self._encode_chat_prompt(
             original_prompt, enable_thinking=enable_thinking
@@ -291,17 +287,14 @@ class SelfieInterpreter:
 
         pad_id = _pad_id(self.tokenizer)
         eos_gen = _eos_token_id_for_generate(self.tokenizer)
-        qwen_flag = self.use_qwen35_sampling if use_qwen35_sampling is None else use_qwen35_sampling
-        orig_gen_kw = merge_generation_kwargs(
+        orig_gen_kw = build_generation_kwargs(
             max_new_tokens=original_max_new_tokens,
             eos_token_id=eos_gen,
             pad_token_id=pad_id,
-            use_qwen35_sampling=qwen_flag,
-            enable_thinking=enable_thinking,
             instance_kwargs=self.generation_kwargs,
             call_kwargs=generation_kwargs,
         )
-        if not qwen_flag and not (self.generation_kwargs or generation_kwargs):
+        if not (self.generation_kwargs or generation_kwargs):
             orig_gen_kw["do_sample"] = False
 
         with torch.no_grad():
@@ -365,16 +358,14 @@ class SelfieInterpreter:
             for key, value in interpretation_prompt.interpretation_prompt_model_inputs.items()
         }
 
-        interp_gen_kw = merge_generation_kwargs(
+        interp_gen_kw = build_generation_kwargs(
             max_new_tokens=interpreter_max_new_tokens,
             eos_token_id=eos_gen,
             pad_token_id=pad_id,
-            use_qwen35_sampling=qwen_flag,
-            enable_thinking=enable_thinking,
             instance_kwargs=self.interpreter_generation_kwargs,
             call_kwargs=interpreter_generation_kwargs,
         )
-        if not qwen_flag and not (self.interpreter_generation_kwargs or interpreter_generation_kwargs):
+        if not (self.interpreter_generation_kwargs or interpreter_generation_kwargs):
             interp_gen_kw["do_sample"] = False
 
         result = self._forward_with_injection(

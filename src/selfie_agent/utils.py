@@ -1,6 +1,6 @@
 import re
 
-# Qwen3 thinking: <|think|> ... <|/think|>
+# Common thinking delimiters: <|think|> ... <|/think|>
 _b = "<" + "|" + "think" + "|>"
 _c = "<" + "|" + "/think" + "|>"
 # redacted_thinking-style blocks (Gemma, etc.): see _d_open / _d_close
