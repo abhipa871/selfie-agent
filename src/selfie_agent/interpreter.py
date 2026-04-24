@@ -491,7 +491,7 @@ class SelfieInterpreter:
             replacing_mode=replacing_mode,
             overlay_strength=overlay_strength,
             injection_mode=injection_mode,
-            decode_skip_special_tokens=False,
+            decode_skip_special_tokens=True,
         )
 
         interpretation_answers = [_postprocess_visible_text(x) for x in result["decoded_texts"]]
@@ -520,37 +520,41 @@ class SelfieInterpreter:
         *,
         only_global_indices: Sequence[int] | None = None,
     ):
-        """Build per-token debug rows for the model output after ``prompt_len``.
-
-        **Alignment with** :meth:`interpret` / ``"tokens_to_interpret"`` **(recommended):** pass
-        ``only_global_indices=result["answer_indices"]`` so each ``rows[i]`` is the *same* global
-        position the interpreter used for the answer span. Otherwise, rows follow the
-        raw stream until a *stop* id (see :func:`answer_stop_id_set`), which is typically broader
-        than ``eos`` alone.
-        """
         toks = original_sequences[0]
+        rows = []
+
         if only_global_indices is not None:
-            rows = []
-            drop_ids = _special_token_ids_to_drop(self.tokenizer)
-            answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
-
-            for global_i in range(prompt_len, toks.shape[0]):
-                tid = int(toks[global_i].item())
-
-                if tid in answer_stop_ids:
-                    break
-
-                if tid in drop_ids:
-                    continue
-
+            for answer_i, global_i in enumerate(only_global_indices):
+                tid = int(toks[int(global_i)].item())
                 rows.append({
                     "answer_idx": answer_i,
-                    "global_idx": global_i,
+                    "global_idx": int(global_i),
                     "token_id": tid,
                     "decoded": repr(self.tokenizer.decode([tid], skip_special_tokens=False)),
                 })
-                answer_i += 1
-       
+            return rows
+
+        drop_ids = _special_token_ids_to_drop(self.tokenizer)
+        answer_stop_ids = _stop_ids_for_answer_span(self.tokenizer)
+
+        answer_i = 0
+        for global_i in range(prompt_len, toks.shape[0]):
+            tid = int(toks[global_i].item())
+
+            if tid in answer_stop_ids:
+                break
+
+            if tid in drop_ids:
+                continue
+
+            rows.append({
+                "answer_idx": answer_i,
+                "global_idx": global_i,
+                "token_id": tid,
+                "decoded": repr(self.tokenizer.decode([tid], skip_special_tokens=False)),
+            })
+            answer_i += 1
+
         return rows
 
     def _encode_chat_prompt(self, prompt: str, enable_thinking: bool = False):

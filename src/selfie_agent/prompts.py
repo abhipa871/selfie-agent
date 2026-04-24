@@ -55,7 +55,13 @@ class InterpretationPrompt:
 
             self.insert_locations.append(len(before_ids))
 
-        self.messages = [{"role": "user", "content": user_content}]
+        if self.system_prompt is None:
+            self.messages = [{"role": "user", "content": user_content}]
+        else:
+            self.messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_content},
+            ]
         encoded = apply_chat_template_with_thinking(
             tokenizer,
             self.messages,
@@ -79,6 +85,6 @@ class InterpretationPrompt:
         if self.system_prompt is None:
             return [{"role": "user", "content": user_content}]
         return [
-            {"role": "user", "content": self.system_prompt},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_content},
         ]
