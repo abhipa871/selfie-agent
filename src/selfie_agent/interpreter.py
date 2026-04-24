@@ -97,11 +97,16 @@ class SelfieInterpreter:
         injection_mode: str = "batch",
         interpretation_suffix: str = "Summarize this message in two sentences:",
         interpretation_style: InterpretationStyle = "universal",
+        source_layer: int | None = None,
     ) -> Dict[str, Any]:
         """Run the original model generate pass, then the interpretation generate pass with injection.
 
         original_max_new_tokens limits the first completion (source hidden states).
         interpreter_max_new_tokens limits tokens in the interpretation pass after injection.
+        When ``tokens_to_interpret`` is ``"all"``, you must set ``source_layer`` to the index into
+        ``outputs.hidden_states`` (0 = embeddings, 1 = after first block, …) for which block’s
+        states to use for all answer positions; use ``-1`` for the last index.
+
         For Gemma 2, Qwen 3, Qwen 2.5, and similar, keep ``interpretation_style`` as ``"universal"``
         (or ``"gemma"`` / ``"qwen"``, which are equivalent). Use ``interpretation_style="llama_instruct"``
         for legacy Llama-2-Chat ``[INST]``-style user strings.
@@ -136,9 +141,22 @@ class SelfieInterpreter:
         )
 
         if tokens_to_interpret == "all":
-            final_hidden_layer = len(source_hs) - 1
+            if source_layer is None:
+                raise ValueError(
+                    "When tokens_to_interpret is 'all', pass source_layer: hidden_states index to read "
+                    "for every answer token (0 .. len-1, or -1 for the last layer in hidden_states)."
+                )
+            n_hs = len(source_hs)
+            layer_idx = n_hs - 1 if source_layer == -1 else source_layer
+            if not (0 <= layer_idx < n_hs):
+                raise IndexError(
+                    f"source_layer={source_layer!r} resolved to {layer_idx}, out of range for "
+                    f"{n_hs} hidden state tensors (use 0..{n_hs - 1} or -1)."
+                )
             token_count = len(answer_indices) if answer_only else source_hs[0].shape[-2]
-            tokens_to_interpret = [(final_hidden_layer, i) for i in range(token_count)]
+            tokens_to_interpret = [(layer_idx, i) for i in range(token_count)]
+        elif source_layer is not None:
+            raise ValueError("source_layer is only used when tokens_to_interpret is 'all'")
 
         if interpretation_prompt is None:
             interpretation_prompt = self.make_interpretation_prompt(

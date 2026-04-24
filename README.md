@@ -22,6 +22,7 @@ agent = SelfieInterpreter(model=model, tokenizer=tokenizer)
 result = agent.interpret(
     original_prompt="What's the highest mountain in the world? Answer in 10 words.",
     tokens_to_interpret="all",
+    source_layer=-1,  # which hidden_states index to read for every answer token; -1 = last
     target_layer=0,
     original_max_new_tokens=32,
     interpreter_max_new_tokens=120,
