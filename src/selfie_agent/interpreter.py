@@ -21,6 +21,32 @@ from .prompts import InterpretationPrompt
 from .utils import clean_thinking
 
 
+def _validate_tokens_to_interpret(
+    source_hs: Sequence[torch.Tensor],
+    tokens_to_interpret: Sequence[Tuple[int, int]],
+) -> None:
+    """Ensure ``(layer, token_idx)`` pairs are in range for the sliced **answer** ``source_hs``."""
+    if not source_hs:
+        return
+    n = int(source_hs[0].shape[-2])
+    n_layers = len(source_hs)
+    for j, (layer_idx, token_idx) in enumerate(tokens_to_interpret):
+        li, ti = int(layer_idx), int(token_idx)
+        if not (0 <= li < n_layers):
+            raise IndexError(
+                f"tokens_to_interpret[{j}] layer {layer_idx} is out of range; "
+                f"hidden state tensors are indexed 0..{n_layers - 1}."
+            )
+        if n == 0 or not (0 <= ti < n):
+            raise IndexError(
+                f"tokens_to_interpret[{j}] has token index {token_idx} but the answer "
+                f"hidden-state slice has {n} position(s) (use 0..{n - 1} when non-empty). "
+                f"The second element is a 0-based index along the *trimmed* answer span, in the same "
+                f"order as result['answer_indices'] (Gemma-4 thought/layout stripping applied when "
+                f"relevant); it is not a global input_ids index."
+            )
+
+
 def _pad_id(tokenizer) -> int:
     if tokenizer.pad_token_id is not None:
         return int(tokenizer.pad_token_id)
@@ -271,6 +297,9 @@ class SelfieInterpreter:
         answer_hs = tuple(layer_hs[answer_indices, :] for layer_hs in full_hs)
         return outputs, answer_hs, answer_indices
 
+    # `answer_indices` / sliced `answer_hs` row *i* align with the second int in
+    # ``tokens_to_interpret`` = ``(layer, i)`` in :meth:`interpret` (not global positions).
+
     def interpret(
         self,
         original_prompt: str,
@@ -320,6 +349,17 @@ class SelfieInterpreter:
         from :func:`selfie_agent.generation.prepare_generation_kwargs` handle ``presence_penalty`` and
         strip ``min_p=0``. If no extra kwargs are passed, generation uses greedy decoding
         (``do_sample=False``).
+
+        **Placeholder / token alignment:** Each entry in ``tokens_to_interpret`` is ``(layer, i)``
+        where ``i`` is **not** a global input_ids position. It indexes the **sliced** answer hidden
+        states returned from :meth:`get_hidden_states_from_sequences` (row ``i`` = the ``i``-th
+        value in ``result['answer_indices']`` in order, after any leading thought-channel skip and
+        trailing layout trim for Gemma 4 with ``enable_thinking=False``). In ``injection_mode="aligned"``,
+        ``tokens_to_interpret[j]`` is injected at the *j*-th ``0`` placeholder in the interpretation
+        prompt, in the order those placeholders were laid out in the user sequence (the default prompt
+        lists placeholders before the summary suffix, left to right). Use ``"all"`` and ``source_layer`` to
+        get ``(source_layer, 0)…(source_layer, K-1)`` automatically, which stays 1:1 with placeholders
+        when you use the default :class:`InterpretationPrompt` with ``K`` placeholders.
         """
         original_input_ids, original_attention_mask = self._encode_chat_prompt(
             original_prompt, enable_thinking=enable_thinking
@@ -396,6 +436,8 @@ class SelfieInterpreter:
             tokens_to_interpret = [(layer_idx, i) for i in range(token_count)]
         elif source_layer is not None:
             raise ValueError("source_layer is only used when tokens_to_interpret is 'all'")
+
+        _validate_tokens_to_interpret(source_hs, list(tokens_to_interpret))
 
         if interpretation_prompt is None:
             interpretation_prompt = self.make_interpretation_prompt(
