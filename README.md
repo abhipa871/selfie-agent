@@ -5,7 +5,7 @@ Small, class-based utilities for running hidden-state injection and interpretati
 ## Install from Git
 
 ```bash
-pip install "git+https://github.com/<your-username>/selfie-agent.git"
+pip install "git+https://github.com/abhipa871/selfie-agent.git"
 ```
 
 ## Quick Example
