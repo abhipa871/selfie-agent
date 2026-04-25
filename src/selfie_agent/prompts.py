@@ -11,7 +11,7 @@ class InterpretationPrompt:
         tokenizer,
         user_prompt_sequence: Sequence[object],
         system_prompt: str | None = None,
-        placeholder: str = "- ",
+        placeholder: str = "_ ",
         enable_thinking: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
@@ -20,38 +20,26 @@ class InterpretationPrompt:
         self.enable_thinking = enable_thinking
 
         user_content = ""
-        self.insert_locations = []
+        self.insert_locations: list[int] = []
 
         for part in user_prompt_sequence:
             if isinstance(part, str):
                 user_content += part
                 continue
 
-            before_messages = self._build_messages(user_content)
-            before_text = apply_chat_template_with_thinking(
-                tokenizer,
-                before_messages,
-                enable_thinking=self.enable_thinking,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            before_ids = tokenizer.encode(before_text, add_special_tokens=False)
+            before_ids = self._encode_messages(user_content)
 
             user_content += placeholder
 
-            after_messages = self._build_messages(user_content)
-            after_text = apply_chat_template_with_thinking(
-                tokenizer,
-                after_messages,
-                enable_thinking=self.enable_thinking,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            after_ids = tokenizer.encode(after_text, add_special_tokens=False)
+            after_ids = self._encode_messages(user_content)
 
-            self.insert_locations.extend(
-                self._find_insert_locations(before_ids, after_ids)
+            insert_locations = self._find_exact_one_insert_location(
+                before_ids=before_ids,
+                after_ids=after_ids,
+                placeholder=placeholder,
             )
+
+            self.insert_locations.extend(insert_locations)
 
         self.messages = self._build_messages(user_content)
 
@@ -77,13 +65,24 @@ class InterpretationPrompt:
     def _build_messages(self, user_content: str):
         if self.system_prompt is None:
             return [{"role": "user", "content": user_content}]
+
         return [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_content},
         ]
 
+    def _encode_messages(self, user_content: str) -> list[int]:
+        text = apply_chat_template_with_thinking(
+            self.tokenizer,
+            self._build_messages(user_content),
+            enable_thinking=self.enable_thinking,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        return self.tokenizer.encode(text, add_special_tokens=False)
+
     @staticmethod
-    def _find_insert_locations(before_ids, after_ids):
+    def _find_changed_span(before_ids: list[int], after_ids: list[int]) -> list[int]:
         left = 0
         while (
             left < len(before_ids)
@@ -103,7 +102,36 @@ class InterpretationPrompt:
             right_before -= 1
             right_after -= 1
 
-        if right_after <= left:
-            raise ValueError("Could not locate placeholder token span.")
-
         return list(range(left, right_after))
+
+    def _find_exact_one_insert_location(
+        self,
+        *,
+        before_ids: list[int],
+        after_ids: list[int],
+        placeholder: str,
+    ) -> list[int]:
+        changed = self._find_changed_span(before_ids, after_ids)
+
+        if len(changed) != 1:
+            changed_tokens = [
+                self.tokenizer.decode([after_ids[i]], skip_special_tokens=False)
+                for i in changed
+                if 0 <= i < len(after_ids)
+            ]
+
+            standalone = self.tokenizer.encode(
+                placeholder,
+                add_special_tokens=False,
+            )
+
+            raise ValueError(
+                f"Placeholder {placeholder!r} must correspond to exactly one token "
+                f"inside the final chat-templated prompt, but it corresponded to "
+                f"{len(changed)} changed token position(s): {changed}. "
+                f"Changed token text: {changed_tokens!r}. "
+                f"Standalone placeholder tokenization: {standalone}. "
+                "Choose a different placeholder for this tokenizer."
+            )
+
+        return changed

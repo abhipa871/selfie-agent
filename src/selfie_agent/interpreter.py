@@ -237,7 +237,7 @@ class SelfieInterpreter:
         num_placeholders: int,
         suffix: str = "Summarize this message in two sentences:",
         style: InterpretationStyle = "universal",
-        placeholder: str = "- ",
+        placeholder: str = "_ ",
         enable_thinking: bool = False,
     ) -> InterpretationPrompt:
         """Build an :class:`InterpretationPrompt` for the loaded tokenizer's chat template.
@@ -334,7 +334,7 @@ class SelfieInterpreter:
         interpretation_suffix: str = "Summarize this message in two sentences:",
         interpretation_style: InterpretationStyle = "universal",
         source_layer: int | None = None,
-        placeholder: str = "- ",
+        placeholder: str = "_ ",
         enable_thinking: bool = False,
         generation_kwargs: Dict[str, Any] | None = None,
         interpreter_generation_kwargs: Dict[str, Any] | None = None,
@@ -449,8 +449,15 @@ class SelfieInterpreter:
         _validate_tokens_to_interpret(source_hs, list(tokens_to_interpret))
 
         if interpretation_prompt is None:
+            if injection_mode == "batch":
+                num_placeholders = 5
+            elif injection_mode == "aligned":
+                num_placeholders = len(tokens_to_interpret)
+            else:
+                raise ValueError("injection_mode must be 'batch' or 'aligned'")
+
             interpretation_prompt = self.make_interpretation_prompt(
-                num_placeholders=len(tokens_to_interpret),
+                num_placeholders=num_placeholders,
                 suffix=interpretation_suffix,
                 style=interpretation_style,
                 placeholder=placeholder,
