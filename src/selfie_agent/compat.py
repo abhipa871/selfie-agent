@@ -8,25 +8,68 @@ import torch.nn as nn
 
 # Chat-template-friendly: placeholders + suffix are wrapped by tokenizer.apply_chat_template
 # (Gemma, Llama-3, Mistral, etc.). "llama_instruct" keeps the legacy [INST] user-string pattern.
-# "llama3" is an alias of "universal" (Meta Llama 3/3.1/3.3 Instruct — do not use llama_instruct).
+# Styles in ``CHATML_LIKE_STYLES`` only differ by name: layout is
+#   user placeholders (+ optional user suffix) | assistant prefill via ``InterpretationPrompt.assistant_prefill`` —
+#   same for Meta Llama 2 (via template), Llama 3, Gemma 2/3/4, Qwen, etc.
 InterpretationStyle = Literal[
-    "universal", "llama3", "llama_instruct", "gemma", "qwen"
+    "universal",
+    "llama3",
+    "llama_instruct",
+    "gemma",
+    "gemma2",
+    "gemma3",
+    "gemma4",
+    "qwen",
 ]
+
+# All equivalent for the built-in sequence: ``(0,…,0)`` and optional ``\n{suffix}`` in user, or
+# SelfIE split with ``user_message_only_placeholders=True`` + ``assistant_prefill`` on :class:`InterpretationPrompt`.
+CHATML_LIKE_STYLES: frozenset[str] = frozenset(
+    {
+        "universal",
+        "llama3",
+        "gemma",
+        "gemma2",
+        "gemma3",
+        "gemma4",
+        "qwen",
+    }
+)
 
 
 def interpretation_user_prompt_sequence(
     num_placeholders: int,
     suffix: str,
     style: InterpretationStyle = "universal",
+    *,
+    user_message_only_placeholders: bool = False,
 ) -> Tuple[object, ...]:
+    """Build the user-turn ``(string | 0 | …)`` sequence for :class:`selfie_agent.prompts.InterpretationPrompt`.
+
+    Each ``0`` becomes a ``placeholder`` when building the user text. If
+    ``user_message_only_placeholders`` is ``True``, *suffix* is omitted here and should be passed as
+    ``assistant_prefill`` (SelfIE-style: only placeholders in the user turn, task text as assistant
+    prefill; see the upstream SelfIE repo). If ``False`` (default), the suffix is appended in the
+    **user** string (older single-user-turn behavior).
+
+    For **Meta Llama 2 / 3**, **Gemma 2 / 3 / 4**, **Qwen**, and other ``apply_chat_template`` models,
+    any style in :data:`CHATML_LIKE_STYLES` produces the same placeholder layout; the tokenizer's
+    template (and ``enable_thinking`` on :class:`InterpretationPrompt` for thinking models) does the
+    rest.
+    """
     s = str(style)
-    if s in ("universal", "gemma", "qwen", "llama3"):
+    if s in CHATML_LIKE_STYLES:
+        if user_message_only_placeholders:
+            return tuple([0] * num_placeholders)
         return tuple([0] * num_placeholders + [f"\n{suffix}"])
     if s == "llama_instruct":
+        if user_message_only_placeholders:
+            return tuple(["[INST]"] + [0] * num_placeholders + ["[/INST]"])
         return tuple(["[INST]"] + [0] * num_placeholders + [f"[/INST] {suffix}"])
     raise ValueError(
         f"Unknown interpretation style {style!r}. "
-        "Use 'universal' or 'llama3' (Llama 3.x), or 'llama_instruct' (legacy Llama-2-Chat only)."
+        "Use one of CHATML_LIKE_STYLES (e.g. 'universal', 'llama3', 'gemma2', 'gemma3', 'gemma4', 'qwen') "
+        "or 'llama_instruct' (legacy Llama-2-Chat only)."
     )
 
 

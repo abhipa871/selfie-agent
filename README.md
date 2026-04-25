@@ -34,7 +34,9 @@ print(result["original_answer"])
 print(result["interpretation_answers"][0])  # single string in aligned mode
 ```
 
-**Chat templates:** Gemma 2, **Meta Llama 3/3.1/3.3** Instruct, and most Hugging Face instruct models use the default framing (`interpretation_style="universal"`, or `"llama3"` / `"gemma"` / `"qwen"`, which are equivalent for layout). Use `interpretation_style="llama_instruct"` only when the *user* text itself uses legacy Llama-2-Chat `[INST]…[/INST]` wrapping.
+**Chat templates:** For **Gemma 2 / 3 / 4**, **Meta Llama 2 (HF chat) / Llama 3+**, **Qwen**, and similar models, the built-in user-placeholder + assistant-prefill layout is the same; use any name in `CHATML_LIKE_STYLES` from `selfie_agent` (e.g. `interpretation_style="gemma4"`, `"llama3"`, or `"universal"`)—only the checkpoint’s `apply_chat_template` differs. **Gemma 3/4 thinking** models may need `enable_thinking=True` on `interpret()`. Use `interpretation_style="llama_instruct"` when the *user* text uses legacy `[INST]…[/INST]` wrapping (typical for **Llama 2**-style SelfIE strings); use `universal` / `llama3` / `gemma*` when the tokenizer formats the chat.
+
+**SelfIE-style user vs assistant (default):** with `assistant_prefill_suffix=True` (default on `interpret()` and `make_interpretation_prompt`), `interpretation_suffix` is the **start of the assistant** turn, and placeholders sit only in the **user** turn (same idea as the original SelfIE / `[INST] _ … [/INST]` + assistant prefill, but via `apply_chat_template` for modern chat models). Set `assistant_prefill_suffix=False` to put the suffix in a single user message (older behavior).
 
 If a checkpoint needs custom modeling code, use `ModelLoader().load("namespace/model", trust_remote_code=True)`.
 
@@ -66,24 +68,20 @@ If the original completion has fewer tokens than an explicit list expects, you w
 If `interpretation_prompt` is omitted, the library builds one with `make_interpretation_prompt`:
 
 - `num_placeholders=len(tokens_to_interpret)` (after `"all"` is expanded).
-- `interpretation_suffix` (default: summarize instruction).
+- `interpretation_suffix` (default: summarize instruction), as **assistant** prefill when `assistant_prefill_suffix=True` (default).
 - `interpretation_style` / `placeholder` / `enable_thinking`.
 
-**Custom prompt:** build `InterpretationPrompt(tokenizer, user_prompt_sequence, placeholder="…", enable_thinking=False)` where `user_prompt_sequence` is a mix of **strings** (literal user text) and **`0`** markers (each `0` becomes one `placeholder` in the user message, in order). The tokenizer’s chat template must turn each appended `placeholder` into **exactly one new token** in context (validated at construction). Example for a generic chat model:
+**Custom prompt:** build `InterpretationPrompt(tokenizer, user_prompt_sequence, placeholder="…", enable_thinking=False, assistant_prefill="…"?)` where `user_prompt_sequence` is a mix of **strings** and **`0`** markers. Pass **`assistant_prefill=…`** to put the task text in the **assistant** turn; omit it to keep one user turn only. Each `0` must become **exactly one** new token in the templated model input. Example (Llama 3 / universal chat — placeholders in user, task as assistant prefill):
 
 ```python
 from selfie_agent import InterpretationPrompt
 
 interpretation_prompt = InterpretationPrompt(
     tokenizer,
-    (
-        0,
-        0,
-        0,
-        "\nSummarize this message in two sentences:",
-    ),
+    (0, 0, 0),  # user turn: three placeholder slots
     placeholder="- ",
     enable_thinking=False,
+    assistant_prefill="Summarize this message in two sentences:",
 )
 
 result = agent.interpret(
@@ -122,6 +120,7 @@ for i, text in enumerate(result["interpretation_answers"]):
 | Parameter | Role |
 |-----------|------|
 | `answer_only` | If `True` (default), hidden states use only the generated answer span (after `original_prompt_len`). If `False`, more positions are kept (see docstring on `get_hidden_states_from_sequences`); `prompt_len` is required internally. |
+| `gemma4_final_answer_tokens_only` | If `True`, for the **original** completion only, keep hidden states only for tokens **after** the detected *final* channel header (Gemma 4 with thinking disabled often emits an empty *thought* channel first; use with `interpretation_style="gemma4"` / Gemma 4 checkpoints). If the header is not found, the full answer span is used. |
 | `replacing_mode` | `"normalized"` (default) or `"addition"` for how injected vectors mix with activations at hook sites. |
 | `overlay_strength` | Scalar weight for injection (default `1.0`). |
 | `generation_kwargs` / `interpreter_generation_kwargs` | Extra `model.generate` arguments merged after required keys; constructor can set defaults via `SelfieInterpreter(..., generation_kwargs=…, interpreter_generation_kwargs=…)`. Use `prepare_generation_kwargs` if you pass `presence_penalty` or `min_p=0`. If no extras are given, decoding is greedy (`do_sample=False`). |
@@ -143,5 +142,6 @@ for i, text in enumerate(result["interpretation_answers"]):
 - `selfie_agent.compat`: interpretation prompt styles, decoder layer lookup, device resolution, `apply_chat_template_with_thinking`
 - `selfie_agent.prompts`: `InterpretationPrompt`
 - `selfie_agent.interpreter`: `SelfieInterpreter`, hidden-state extraction, injection, `interpret`
+- `selfie_agent.gemma4`: optional *final*-channel detection for Gemma 4 answer spans
 - `selfie_agent.utils`: shared helpers (e.g. thinking-strip)
 - `selfie_agent.generation`: `prepare_generation_kwargs`, `PresencePenaltyLogitsProcessor`

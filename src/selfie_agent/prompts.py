@@ -13,11 +13,16 @@ class InterpretationPrompt:
         system_prompt: str | None = None,
         placeholder: str = "_ ",
         enable_thinking: bool = False,
+        assistant_prefill: str | None = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.placeholder = placeholder
         self.system_prompt = system_prompt
         self.enable_thinking = enable_thinking
+        # When set, ``suffix`` from :func:`selfie_agent.compat.interpretation_user_prompt_sequence`
+        # is modeled as the *assistant* prefill (like ``[/INST]`` + assistant start in the original
+        # SelfIE paper), not as part of the user turn. See ``make_interpretation_prompt`` and README.
+        self.assistant_prefill = assistant_prefill
 
         user_content = ""
         self.insert_locations: list[int] = []
@@ -27,11 +32,11 @@ class InterpretationPrompt:
                 user_content += part
                 continue
 
-            before_ids = self._encode_messages(user_content)
+            before_ids = self._encode_for_insert_diff(user_content)
 
             user_content += placeholder
 
-            after_ids = self._encode_messages(user_content)
+            after_ids = self._encode_for_insert_diff(user_content)
 
             insert_locations = self._find_exact_one_insert_location(
                 before_ids=before_ids,
@@ -41,8 +46,9 @@ class InterpretationPrompt:
 
             self.insert_locations.extend(insert_locations)
 
-        self.messages = self._build_messages(user_content)
+        self.messages = self._conversation_for_final_encode(user_content)
 
+        # Same user/assistant message shape for Llama 3, Gemma 2/3, Qwen, etc.; tokenizer template differs.
         encoded = apply_chat_template_with_thinking(
             tokenizer,
             self.messages,
@@ -71,10 +77,29 @@ class InterpretationPrompt:
             {"role": "user", "content": user_content},
         ]
 
-    def _encode_messages(self, user_content: str) -> list[int]:
+    def _build_messages_with_assistant(self, user_content: str, assistant_content: str):
+        if self.system_prompt is None:
+            return [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ]
+        return [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": assistant_content},
+        ]
+
+    def _conversation_for_final_encode(self, user_content: str):
+        if self.assistant_prefill is not None:
+            return self._build_messages_with_assistant(user_content, self.assistant_prefill)
+        return self._build_messages(user_content)
+
+    def _encode_for_insert_diff(self, user_content: str) -> list[int]:
+        """Same chat framing as the final prompt, so insert indices match tokenized model input."""
+        convo = self._conversation_for_final_encode(user_content)
         text = apply_chat_template_with_thinking(
             self.tokenizer,
-            self._build_messages(user_content),
+            convo,
             enable_thinking=self.enable_thinking,
             tokenize=False,
             add_generation_prompt=True,
