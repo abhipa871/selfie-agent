@@ -49,19 +49,12 @@ class InterpretationPrompt:
             )
             after_ids = tokenizer.encode(after_text, add_special_tokens=False)
 
-            added = len(after_ids) - len(before_ids)
-            if added != 1:
-                raise ValueError(f"Placeholder {placeholder!r} added {added} tokens, not 1.")
+            self.insert_locations.extend(
+                self._find_insert_locations(before_ids, after_ids)
+            )
 
-            self.insert_locations.append(len(before_ids))
+        self.messages = self._build_messages(user_content)
 
-        if self.system_prompt is None:
-            self.messages = [{"role": "user", "content": user_content}]
-        else:
-            self.messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_content},
-            ]
         encoded = apply_chat_template_with_thinking(
             tokenizer,
             self.messages,
@@ -88,3 +81,29 @@ class InterpretationPrompt:
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_content},
         ]
+
+    @staticmethod
+    def _find_insert_locations(before_ids, after_ids):
+        left = 0
+        while (
+            left < len(before_ids)
+            and left < len(after_ids)
+            and before_ids[left] == after_ids[left]
+        ):
+            left += 1
+
+        right_before = len(before_ids)
+        right_after = len(after_ids)
+
+        while (
+            right_before > left
+            and right_after > left
+            and before_ids[right_before - 1] == after_ids[right_after - 1]
+        ):
+            right_before -= 1
+            right_after -= 1
+
+        if right_after <= left:
+            raise ValueError("Could not locate placeholder token span.")
+
+        return list(range(left, right_after))
