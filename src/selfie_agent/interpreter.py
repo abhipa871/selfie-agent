@@ -410,6 +410,7 @@ class SelfieInterpreter:
         overlay_strength: float = 1.0,
         answer_only: bool = True,
         injection_mode: str = "batch",
+        batch_num_placeholders: int | None = None,
         interpretation_suffix: str = "Summarize this message in two sentences:",
         interpretation_style: InterpretationStyle = "universal",
         source_layer: int | None = None,
@@ -443,6 +444,11 @@ class SelfieInterpreter:
 
         ``placeholder`` is passed to the default :class:`InterpretationPrompt` only; ignored if you pass
         ``interpretation_prompt`` yourself.
+
+        ``batch_num_placeholders`` is used only when the default prompt is built and ``injection_mode`` is
+        ``"batch"``. If ``None`` (default), ``num_placeholders = max(5, len(tokens_to_interpret))``. If an
+        integer, that value is used as ``num_placeholders`` (must be >= 1). Ignored in ``aligned`` mode or
+        when you pass a custom ``interpretation_prompt``.
 
         ``enable_thinking`` is passed to ``apply_chat_template`` only if the tokenizer defines that
         argument (default ``False``). Ignored otherwise. For a custom :class:`InterpretationPrompt`, set
@@ -547,9 +553,12 @@ class SelfieInterpreter:
         if interpretation_prompt is None:
             n_tok = len(list(tokens_to_interpret))
             if injection_mode == "batch":
-                # Match the number of source tokens; old fixed 5 was wrong for ``tokens_to_interpret="all"``
-                # and caused confusing injection dimensions vs Llama 3.3+ chat.
-                num_placeholders = max(1, n_tok)
+                if batch_num_placeholders is not None:
+                    if batch_num_placeholders < 1:
+                        raise ValueError("batch_num_placeholders must be >= 1 when set")
+                    num_placeholders = batch_num_placeholders
+                else:
+                    num_placeholders = max(5, n_tok)
             elif injection_mode == "aligned":
                 num_placeholders = n_tok
             else:

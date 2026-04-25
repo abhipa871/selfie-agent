@@ -83,6 +83,19 @@ def _apply_chat_accepts_thinking_kw(tokenizer) -> bool:
     return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+def _filter_kwargs_for_apply_chat_template(tokenizer, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Drop keyword arguments that this tokenizer's ``apply_chat_template`` does not accept."""
+    try:
+        sig = inspect.signature(tokenizer.apply_chat_template)
+        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    if has_varkw:
+        return dict(kwargs)
+    param_names = set(sig.parameters.keys())
+    return {k: v for k, v in kwargs.items() if k in param_names}
+
+
 def apply_chat_template_with_thinking(
     tokenizer,
     conversation,
@@ -90,15 +103,16 @@ def apply_chat_template_with_thinking(
     enable_thinking: bool = False,
     **kwargs: Any,
 ) -> Any:
-    """Call ``apply_chat_template``, passing ``enable_thinking`` when the method can accept it."""
-    call_kw = dict(kwargs)
-    try:
-        if _apply_chat_accepts_thinking_kw(tokenizer):
-            call_kw["enable_thinking"] = enable_thinking
-        return tokenizer.apply_chat_template(conversation, **call_kw)
-    except TypeError:
-        call_kw.pop("enable_thinking", None)
-        return tokenizer.apply_chat_template(conversation, **call_kw)
+    """Call ``apply_chat_template``, passing ``enable_thinking`` when the method can accept it.
+
+    Unknown ``kwargs`` (e.g. ``continue_final_message`` on older tokenizers) are filtered using the
+    method signature so we do not raise ``TypeError``.
+    """
+    call_kw = _filter_kwargs_for_apply_chat_template(tokenizer, dict(kwargs))
+    if _apply_chat_accepts_thinking_kw(tokenizer):
+        call_kw["enable_thinking"] = enable_thinking
+    call_kw = _filter_kwargs_for_apply_chat_template(tokenizer, call_kw)
+    return tokenizer.apply_chat_template(conversation, **call_kw)
 
 
 def get_decoder_layers(model) -> nn.Module:

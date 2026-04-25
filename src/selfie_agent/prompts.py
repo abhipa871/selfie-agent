@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Dict, Sequence
 
 from .compat import apply_chat_template_with_thinking
 
@@ -19,9 +19,10 @@ class InterpretationPrompt:
         self.placeholder = placeholder
         self.system_prompt = system_prompt
         self.enable_thinking = enable_thinking
-        # When set, ``suffix`` from :func:`selfie_agent.compat.interpretation_user_prompt_sequence`
-        # is modeled as the *assistant* prefill (like ``[/INST]`` + assistant start in the original
-        # SelfIE paper), not as part of the user turn. See ``make_interpretation_prompt`` and README.
+        # When set, ``suffix`` is the *assistant* prefill. We use ``add_generation_prompt=False`` so
+        # ``apply_chat_template`` does not add a second assistant header after the prefilled turn;
+        # we pass ``continue_final_message=True`` when the tokenizer supports it (HF) so generation
+        # continues the partial assistant message.
         self.assistant_prefill = assistant_prefill
 
         user_content = ""
@@ -48,13 +49,16 @@ class InterpretationPrompt:
 
         self.messages = self._conversation_for_final_encode(user_content)
 
-        # Same user/assistant message shape for Llama 3, Gemma 2/3, Qwen, etc.; tokenizer template differs.
+        # If we already have an assistant prefill, do not append a second "generation" assistant header
+        # (``add_generation_prompt=True``) — that duplicates roles and can cause repeated "assistant" junk.
+        # Optional ``continue_final_message`` (HF) keeps generation continuing the last assistant turn.
         encoded = apply_chat_template_with_thinking(
             tokenizer,
             self.messages,
             enable_thinking=self.enable_thinking,
             return_tensors="pt",
-            add_generation_prompt=True,
+            add_generation_prompt=(self.assistant_prefill is None),
+            **self._assistant_prefill_apply_chat_extras(),
         )
 
         if hasattr(encoded, "input_ids"):
@@ -94,6 +98,12 @@ class InterpretationPrompt:
             return self._build_messages_with_assistant(user_content, self.assistant_prefill)
         return self._build_messages(user_content)
 
+    def _assistant_prefill_apply_chat_extras(self) -> Dict[str, Any]:
+        """Kwargs for ``apply_chat_template`` when using assistant prefill (see class doc)."""
+        if self.assistant_prefill is not None:
+            return {"continue_final_message": True}
+        return {}
+
     def _encode_for_insert_diff(self, user_content: str) -> list[int]:
         """Same chat framing as the final prompt, so insert indices match tokenized model input."""
         convo = self._conversation_for_final_encode(user_content)
@@ -102,7 +112,8 @@ class InterpretationPrompt:
             convo,
             enable_thinking=self.enable_thinking,
             tokenize=False,
-            add_generation_prompt=True,
+            add_generation_prompt=(self.assistant_prefill is None),
+            **self._assistant_prefill_apply_chat_extras(),
         )
         return self.tokenizer.encode(text, add_special_tokens=False)
 
