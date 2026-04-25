@@ -25,7 +25,6 @@ class TestChatmlLikeStyles(unittest.TestCase):
     def test_frozen_set_is_complete_for_literal_stems(self) -> None:
         for st in ("universal", "llama3", "gemma", "gemma2", "gemma3", "gemma4", "qwen"):
             self.assertIn(st, CHATML_LIKE_STYLES)
-        self.assertNotIn("llama_instruct", CHATML_LIKE_STYLES)
 
 
 if __name__ == "__main__":

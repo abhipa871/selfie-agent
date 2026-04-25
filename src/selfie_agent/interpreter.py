@@ -290,11 +290,8 @@ class SelfieInterpreter:
         Use any style in :data:`selfie_agent.compat.CHATML_LIKE_STYLES` — e.g. ``"universal"``,
         ``"llama3"``, ``"gemma"`` / ``"gemma2"`` / ``"gemma3"`` / ``"gemma4"``, ``"qwen"`` — for
         the same user-placeholder + optional assistant-prefill layout; only the tokenizer's
-        ``apply_chat_template`` differs. For **Llama 2**-style *raw* user strings with ``[INST]``,
-        use ``"llama_instruct"`` instead of these.
-
-        For legacy prompts that match original Llama-2-Chat *user* strings with ``[INST]...[/INST]`` inside
-        the user turn, pass ``style="llama_instruct"`` (do not use for Llama 3+).
+        ``apply_chat_template`` differs (including **Llama 2**-Chat and **Llama 3+**; pick a name that
+        matches the checkpoint, often ``"universal"``).
 
         If ``assistant_prefill_suffix`` is ``True`` (default), the *suffix* is the **start of the
         assistant** message (``{"role": "assistant", "content": suffix}``), and the user turn only
@@ -433,9 +430,8 @@ class SelfieInterpreter:
         :data:`selfie_agent.compat.CHATML_LIKE_STYLES` (e.g. ``"universal"``, ``"llama3"``,
         ``"gemma2"``, ``"gemma3"``, ``"gemma4"``) is equivalent for *layout*; pick a name to match
         your checkpoint. For **Gemma 3/4 thinking** models, if the tokenizer expects it, set
-        ``enable_thinking=True``. Use ``interpretation_style="llama_instruct"`` for **Llama 2**-style
-        raw ``[INST]…[/INST]`` *user* strings; use ``"universal"``/``"llama3"``/``"gemma*"`` when
-        `apply_chat_template` defines the turn structure.
+        ``enable_thinking=True``. **Meta Llama 2 (HF chat)** is covered the same way: use e.g. ``"universal"``
+        and the tokenizer's template supplies ``[INST]``…``[/INST]`` (or equivalent) around the user turn.
 
         If ``assistant_prefill_suffix`` is ``True`` (default), ``interpretation_suffix`` is the first
         **assistant** content (the paper / SelfIE design); placeholders live only in the **user**

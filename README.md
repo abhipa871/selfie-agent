@@ -27,14 +27,14 @@ result = agent.interpret(
     original_max_new_tokens=32,
     interpreter_max_new_tokens=120,
     injection_mode="aligned",
-    interpretation_style="llama_instruct",  # Llama-2-Chat user-string framing (see below)
+    interpretation_style="universal",  # match CHATML_LIKE_STYLES to checkpoint; Llama-2-Chat is fine
 )
 
 print(result["original_answer"])
 print(result["interpretation_answers"][0])  # single string in aligned mode
 ```
 
-**Chat templates:** For **Gemma 2 / 3 / 4**, **Meta Llama 2 (HF chat) / Llama 3+**, **Qwen**, and similar models, the built-in user-placeholder + assistant-prefill layout is the same; use any name in `CHATML_LIKE_STYLES` from `selfie_agent` (e.g. `interpretation_style="gemma4"`, `"llama3"`, or `"universal"`)—only the checkpoint’s `apply_chat_template` differs. **Gemma 3/4 thinking** models may need `enable_thinking=True` on `interpret()`. Use `interpretation_style="llama_instruct"` when the *user* text uses legacy `[INST]…[/INST]` wrapping (typical for **Llama 2**-style SelfIE strings); use `universal` / `llama3` / `gemma*` when the tokenizer formats the chat.
+**Chat templates:** For **Gemma 2 / 3 / 4**, **Meta Llama 2 (HF chat) / Llama 3+**, **Qwen**, and similar models, the built-in user-placeholder + assistant-prefill layout is the same; use any name in `CHATML_LIKE_STYLES` (e.g. `interpretation_style="gemma4"`, `"llama3"`, or `"universal"`)—only the checkpoint’s `apply_chat_template` differs (Llama-2-Chat’s `[INST]…[/INST]` and newer chat formats are all applied by the tokenizer, not a separate `interpretation_style`). **Gemma 3/4 thinking** models may need `enable_thinking=True` on `interpret()`.
 
 **SelfIE-style user vs assistant (default):** with `assistant_prefill_suffix=True` (default on `interpret()` and `make_interpretation_prompt`), `interpretation_suffix` is the **start of the assistant** turn, and placeholders sit only in the **user** turn (same idea as the original SelfIE / `[INST] _ … [/INST]` + assistant prefill, but via `apply_chat_template` for modern chat models). The template call uses `add_generation_prompt=False` when an assistant message is already present (so you do not get a duplicate assistant header), and passes `continue_final_message=True` when the tokenizer supports it. Set `assistant_prefill_suffix=False` to put the suffix in a single user message (older behavior).
 

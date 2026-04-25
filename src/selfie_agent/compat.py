@@ -7,14 +7,14 @@ import torch
 import torch.nn as nn
 
 # Chat-template-friendly: placeholders + suffix are wrapped by tokenizer.apply_chat_template
-# (Gemma, Llama-3, Mistral, etc.). "llama_instruct" keeps the legacy [INST] user-string pattern.
-# Styles in ``CHATML_LIKE_STYLES`` only differ by name: layout is
+# (Gemma, Llama-2/3, Mistral, etc.). Styles in ``CHATML_LIKE_STYLES`` only differ by name: layout is
 #   user placeholders (+ optional user suffix) | assistant prefill via ``InterpretationPrompt.assistant_prefill`` —
-#   same for Meta Llama 2 (via template), Llama 3, Gemma 2/3/4, Qwen, etc.
+#   for Meta **Llama 2 (HF chat)** as well as Llama 3, Gemma 2/3/4, Qwen, etc.
+# The user string is *only* placeholder text (and optional ``\n{suffix}`` in the user turn when not using
+# assistant prefill); ``apply_chat_template`` adds role / legacy ``[INST]`` framing as the checkpoint defines.
 InterpretationStyle = Literal[
     "universal",
     "llama3",
-    "llama_instruct",
     "gemma",
     "gemma2",
     "gemma3",
@@ -62,14 +62,9 @@ def interpretation_user_prompt_sequence(
         if user_message_only_placeholders:
             return tuple([0] * num_placeholders)
         return tuple([0] * num_placeholders + [f"\n{suffix}"])
-    if s == "llama_instruct":
-        if user_message_only_placeholders:
-            return tuple(["[INST]"] + [0] * num_placeholders + ["[/INST]"])
-        return tuple(["[INST]"] + [0] * num_placeholders + [f"[/INST] {suffix}"])
     raise ValueError(
         f"Unknown interpretation style {style!r}. "
-        "Use one of CHATML_LIKE_STYLES (e.g. 'universal', 'llama3', 'gemma2', 'gemma3', 'gemma4', 'qwen') "
-        "or 'llama_instruct' (legacy Llama-2-Chat only)."
+        "Use one of CHATML_LIKE_STYLES (e.g. 'universal', 'llama3', 'gemma2', 'gemma3', 'gemma4', 'qwen')."
     )
 
 
