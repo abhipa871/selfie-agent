@@ -16,6 +16,69 @@ from .prompts import InterpretationPrompt
 from .utils import clean_thinking
 
 
+# Strings that map to a single id for *generate* end-of-sequence and answer-span boundaries.
+# Meta Llama 2/3/3.1/3.3 Instruct, Gemma, and similar: template-specific EOT often differs
+# from ``tokenizer.eos_token_id`` alone, so we collect every id we can resolve.
+def _add_marker_ids_from_strings(tokenizer, markers: tuple[str, ...], target: set[int]) -> None:
+    unk = getattr(tokenizer, "unk_token_id", None)
+    for marker in markers:
+        try:
+            tid = tokenizer.convert_tokens_to_ids(marker)
+        except Exception:  # noqa: BLE001
+            tid = None
+        if tid is not None:
+            t = int(tid)
+            if t >= 0 and (unk is None or t != unk):
+                target.add(t)
+        try:
+            enc = tokenizer.encode(marker, add_special_tokens=False)
+        except Exception:  # noqa: BLE001
+            enc = []
+        if len(enc) == 1:
+            t = int(enc[0])
+            if unk is None or t != unk:
+                target.add(t)
+
+
+# Chat turn / end markers: stops generation and ends assistant text for :meth:`get_hidden_states_from_sequences` scans.
+def _llama3_chat_stopping_markers() -> tuple[str, ...]:
+    return (
+        # Gemma / older chat
+        "<end_of_turn>",
+        "<|turn|>",
+        "<turn|>",
+        "<|im_end|>",
+        # Meta Llama 2 / 3 / 3.3: assistant turn end (EOT) — must be in generate ``eos_token_id``
+        "<|eot_id|>",
+        "<|eot|>",
+        "<|eom_id|>",  # some Llama 3.1+ configs
+        # Doc / legacy
+        "<|end_of_text|>",
+    )
+
+
+# Layout / role tokens in Llama-3+ chat: skip when building answer *content* index lists (not stop tokens).
+def _llama3_layout_drop_markers() -> tuple[str, ...]:
+    return (
+        "<bos>",
+        "<eos>",
+        "<pad>",
+        "<start_of_turn>",
+        "<end_of_turn>",
+        "<end_of_turn>\n",
+        "<|begin_of_text|>",
+        "<|end_of_text|>",
+        "<|eot_id|>",
+        "<|eom_id|>",
+        "<|im_end|>",
+        # Meta Llama 3.x chat template header ids (if echoed)
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+        "<|start_header|>",
+        "<|end_header|>",
+    )
+
+
 def _validate_tokens_to_interpret(
     source_hs: Sequence[torch.Tensor],
     tokens_to_interpret: Sequence[Tuple[int, int]],
@@ -55,6 +118,9 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
     Gemma 2 chat often finishes with ``<end_of_turn>``, which is not always the same id as
     ``tokenizer.eos_token_id``; ``generate`` must receive every such id or it will emit EOT
     as a normal token and run until ``max_new_tokens``.
+
+    Meta **Llama 3 / 3.1 / 3.3** Instruct uses ``<|eot_id|>`` (and related ids) to end assistant
+    turns; those ids must be included here, not just ``eos_token_id``.
     """
     ids: set[int] = set()
     eos = getattr(tokenizer, "eos_token_id", None)
@@ -67,33 +133,13 @@ def _eos_token_ids_for_stopping(tokenizer) -> List[int]:
         tid = getattr(tokenizer, attr, None)
         if tid is not None:
             ids.add(int(tid))
-    unk_id = getattr(tokenizer, "unk_token_id", None)
-    for marker in (
-        "<end_of_turn>",  # Gemma 2 (assistant turn)
-        "<|turn|>",  # Gemma 3/4
-        "<turn|>",
-        "<|im_end|>",  # ChatML-style assistant end
-    ):
-        try:
-            tid = tokenizer.convert_tokens_to_ids(marker)
-        except Exception:
-            tid = None
-        if tid is not None:
-            tid = int(tid)
-            if tid >= 0 and (unk_id is None or tid != unk_id):
-                ids.add(tid)
-        try:
-            encoded = tokenizer.encode(marker, add_special_tokens=False)
-        except Exception:
-            encoded = []
-        if len(encoded) == 1:
-            tid = int(encoded[0])
-            if unk_id is None or tid != unk_id:
-                ids.add(tid)
+    _add_marker_ids_from_strings(tokenizer, _llama3_chat_stopping_markers(), ids)
     return sorted(ids)
 
+
 def _special_token_ids_to_drop(tokenizer) -> set[int]:
-    ids = set()
+    """Ids treated as non-content (layout, specials) when walking generated assistant text."""
+    ids: set[int] = set()
 
     for attr in ("bos_token_id", "eos_token_id", "pad_token_id", "unk_token_id"):
         tid = getattr(tokenizer, attr, None)
@@ -104,32 +150,7 @@ def _special_token_ids_to_drop(tokenizer) -> set[int]:
         else:
             ids.add(int(tid))
 
-    for tok in (
-        "<bos>",
-        "<eos>",
-        "<pad>",
-        "<start_of_turn>",
-        "<end_of_turn>",
-        "<end_of_turn>\n",
-        "<|begin_of_text|>",
-        "<|end_of_text|>",
-        "<|eot_id|>",
-        "<|im_end|>",
-    ):
-        try:
-            tid = tokenizer.convert_tokens_to_ids(tok)
-            if tid is not None and tid >= 0:
-                ids.add(int(tid))
-        except Exception:
-            pass
-
-        try:
-            enc = tokenizer.encode(tok, add_special_tokens=False)
-            if len(enc) == 1:
-                ids.add(int(enc[0]))
-        except Exception:
-            pass
-
+    _add_marker_ids_from_strings(tokenizer, _llama3_layout_drop_markers(), ids)
     return ids
 def _prefix_stream_control_token_indices(tokenizer, seq: List[int]) -> Set[int]:
     """Contiguous indices from position 0 that are BOS / stream-start specials (not conversational content)."""
@@ -242,11 +263,12 @@ class SelfieInterpreter:
     ) -> InterpretationPrompt:
         """Build an :class:`InterpretationPrompt` for the loaded tokenizer's chat template.
 
-        Use ``style="gemma"`` or ``"qwen"`` (or default ``"universal"``) for Gemma 2 and typical chat LMs —
-        only the tokenizer's ``apply_chat_template`` wraps the user text, without Llama-2 ``[INST]`` markers.
+        Use ``style="gemma"`` or ``"qwen"`` (or default ``"universal"`` / ``"llama3"``) for Gemma 2,
+        Meta Llama 3/3.1/3.3 Instruct, and typical chat LMs — only the tokenizer's
+        ``apply_chat_template`` wraps the user text, without Llama-2 ``[INST]`` markers.
 
         For legacy prompts that match original Llama-2-Chat *user* strings with ``[INST]...[/INST]`` inside
-        the user turn, pass ``style="llama_instruct"``.
+        the user turn, pass ``style="llama_instruct"`` (do not use for Llama 3+).
 
         ``placeholder`` is appended for each ``0`` in the built sequence; it must add exactly one token
         with this tokenizer and chat template (see :class:`InterpretationPrompt`).
@@ -347,9 +369,10 @@ class SelfieInterpreter:
         ``outputs.hidden_states`` (0 = embeddings, 1 = after first block, …) for which block’s
         states to use for all answer positions; use ``-1`` for the last index.
 
-        For Gemma 2 and similar chat models, keep ``interpretation_style`` as ``"universal"``
-        (or ``"gemma"`` / ``"qwen"``, which are equivalent). Use ``interpretation_style="llama_instruct"``
-        for legacy Llama-2-Chat ``[INST]``-style user strings.
+        For Gemma 2, Meta **Llama 3/3.1/3.3** Instruct, and similar chat models, keep
+        ``interpretation_style`` as ``"universal"`` (or ``"llama3"`` / ``"gemma"`` / ``"qwen"``,
+        which are equivalent for layout). Use ``interpretation_style="llama_instruct"`` only for
+        legacy Llama-2-Chat ``[INST]``-style user strings.
 
         ``placeholder`` is passed to the default :class:`InterpretationPrompt` only; ignored if you pass
         ``interpretation_prompt`` yourself.
@@ -449,10 +472,13 @@ class SelfieInterpreter:
         _validate_tokens_to_interpret(source_hs, list(tokens_to_interpret))
 
         if interpretation_prompt is None:
+            n_tok = len(list(tokens_to_interpret))
             if injection_mode == "batch":
-                num_placeholders = 5
+                # Match the number of source tokens; old fixed 5 was wrong for ``tokens_to_interpret="all"``
+                # and caused confusing injection dimensions vs Llama 3.3+ chat.
+                num_placeholders = max(1, n_tok)
             elif injection_mode == "aligned":
-                num_placeholders = len(tokens_to_interpret)
+                num_placeholders = n_tok
             else:
                 raise ValueError("injection_mode must be 'batch' or 'aligned'")
 

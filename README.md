@@ -34,7 +34,7 @@ print(result["original_answer"])
 print(result["interpretation_answers"][0])  # single string in aligned mode
 ```
 
-**Chat templates:** Gemma 2 and most Hugging Face instruct models use the default framing (`interpretation_style="universal"`, or `"gemma"` / `"qwen"`, which are equivalent). Use `interpretation_style="llama_instruct"` only when the *user* text itself uses legacy `[INST]…[/INST]` wrapping.
+**Chat templates:** Gemma 2, **Meta Llama 3/3.1/3.3** Instruct, and most Hugging Face instruct models use the default framing (`interpretation_style="universal"`, or `"llama3"` / `"gemma"` / `"qwen"`, which are equivalent for layout). Use `interpretation_style="llama_instruct"` only when the *user* text itself uses legacy Llama-2-Chat `[INST]…[/INST]` wrapping.
 
 If a checkpoint needs custom modeling code, use `ModelLoader().load("namespace/model", trust_remote_code=True)`.
 

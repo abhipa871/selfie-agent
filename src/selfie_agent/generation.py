@@ -49,6 +49,9 @@ def prepare_generation_kwargs(kwargs: Mapping[str, Any]) -> Dict[str, Any]:
     mp = out.get("min_p", None)
     if mp is None or float(mp) == 0.0:
         out.pop("min_p", None)
+    # Avoid transformers warning: both max_new_tokens and max_length; max_new_tokens wins.
+    if out.get("max_new_tokens") is not None and "max_length" in out:
+        out.pop("max_length", None)
     _attach_presence_penalty(out)
     return out
 

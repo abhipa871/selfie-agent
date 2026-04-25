@@ -8,7 +8,10 @@ import torch.nn as nn
 
 # Chat-template-friendly: placeholders + suffix are wrapped by tokenizer.apply_chat_template
 # (Gemma, Llama-3, Mistral, etc.). "llama_instruct" keeps the legacy [INST] user-string pattern.
-InterpretationStyle = Literal["universal", "llama_instruct", "gemma", "qwen"]
+# "llama3" is an alias of "universal" (Meta Llama 3/3.1/3.3 Instruct — do not use llama_instruct).
+InterpretationStyle = Literal[
+    "universal", "llama3", "llama_instruct", "gemma", "qwen"
+]
 
 
 def interpretation_user_prompt_sequence(
@@ -17,13 +20,13 @@ def interpretation_user_prompt_sequence(
     style: InterpretationStyle = "universal",
 ) -> Tuple[object, ...]:
     s = str(style)
-    if s in ("universal", "gemma", "qwen"):
+    if s in ("universal", "gemma", "qwen", "llama3"):
         return tuple([0] * num_placeholders + [f"\n{suffix}"])
     if s == "llama_instruct":
         return tuple(["[INST]"] + [0] * num_placeholders + [f"[/INST] {suffix}"])
     raise ValueError(
         f"Unknown interpretation style {style!r}. "
-        "Use 'universal' (default; most chat LMs) or 'llama_instruct' (legacy Llama-2-Chat FRAMING)."
+        "Use 'universal' or 'llama3' (Llama 3.x), or 'llama_instruct' (legacy Llama-2-Chat only)."
     )
 
 
