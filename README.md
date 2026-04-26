@@ -134,6 +134,37 @@ for i, text in enumerate(result["interpretation_answers"]):
 - `original_outputs`, `interpretation_outputs` — raw `generate` outputs.
 - `original_prompt_len`, `answer_indices`, `target_prompt_len`, `interpretation_prompt`, `injection_mode`.
 
+### LangGraph
+
+Optional extra: `pip install "selfie-agent[langgraph]"` (brings in `langgraph`).
+
+Use the same keys as `interpret()` on your graph state: `state_to_interpret_kwargs` builds the keyword dict (only keys present in the state are forwarded, so defaults match `interpret`). `tokens_to_interpret` may be `"all"`, a list of `(layer, idx)` pairs, or JSON-style `[[layer, idx], ...]`. `interpretation_prompt` can be a live `InterpretationPrompt` in memory.
+
+- `run_selfie_interpret_state(state, agent)` — calls `agent.interpret` and, by default, **merges** the return dict into the state (needed because `StateGraph(dict)` replaces state unless the node returns the full mapping).
+- `make_selfie_interpret_node(agent)` — node callable for a custom graph.
+- `compile_selfie_interpret_graph(agent)` — minimal `START → selfie_interpret → END` graph.
+- `SelfieInterpretGraphState` — `TypedDict` of all `interpret` parameters plus return fields (all optional for partial state).
+
+```python
+from selfie_agent import ModelLoader, SelfieInterpreter
+from selfie_agent import compile_selfie_interpret_graph
+
+model, tokenizer, _ = ModelLoader().load("meta-llama/Llama-2-7b-chat-hf", four_bit_quant=True)
+agent = SelfieInterpreter(model=model, tokenizer=tokenizer)
+graph = compile_selfie_interpret_graph(agent)
+
+out = graph.invoke(
+    {
+        "original_prompt": "What is 2+2? One token.",
+        "tokens_to_interpret": "all",
+        "source_layer": -1,
+        "injection_mode": "aligned",
+        "interpretation_style": "universal",
+    }
+)
+print(out["interpretation_answers"])
+```
+
 ---
 
 ## Package layout
@@ -145,3 +176,4 @@ for i, text in enumerate(result["interpretation_answers"]):
 - `selfie_agent.gemma4`: optional *final*-channel detection for Gemma 4 answer spans
 - `selfie_agent.utils`: shared helpers (e.g. thinking-strip)
 - `selfie_agent.generation`: `prepare_generation_kwargs`, `PresencePenaltyLogitsProcessor`
+- `selfie_agent.langgraph_state`: LangGraph state ↔ `interpret()` (`compile_selfie_interpret_graph`, `state_to_interpret_kwargs`, …)
